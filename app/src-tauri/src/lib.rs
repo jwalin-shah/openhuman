@@ -8,6 +8,8 @@ mod core_update;
 #[cfg(feature = "cef")]
 mod discord_scanner;
 #[cfg(feature = "cef")]
+mod gmessages_scanner;
+#[cfg(feature = "cef")]
 mod imessage_scanner;
 mod notification_settings;
 #[cfg(feature = "cef")]
@@ -607,6 +609,10 @@ pub fn run() {
         .manage(notification_settings::NotificationSettingsState::new());
     #[cfg(feature = "cef")]
     let builder = builder.manage(std::sync::Arc::new(imessage_scanner::ScannerRegistry::new()));
+    #[cfg(feature = "cef")]
+    let builder = builder.manage(std::sync::Arc::new(
+        gmessages_scanner::ScannerRegistry::new(),
+    ));
     let builder = builder.manage(whatsapp_scanner::ScannerRegistry::new());
     #[cfg(feature = "cef")]
     let builder = builder.manage(slack_scanner::ScannerRegistry::new());
