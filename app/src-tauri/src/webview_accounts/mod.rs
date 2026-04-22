@@ -1457,13 +1457,6 @@ pub async fn webview_recipe_event<R: Runtime>(
         }
     }
 
-    let event = WebviewEvent {
-        account_id: args.account_id,
-        provider: args.provider,
-        kind: args.kind,
-        payload: args.payload,
-        ts: args.ts,
-    };
     if let Err(err) = post_provider_surfaces_event(&args).await {
         log::warn!(
             "[webview-accounts] provider_surfaces ingest failed account={} provider={} kind={}: {}",
@@ -1473,6 +1466,14 @@ pub async fn webview_recipe_event<R: Runtime>(
             err
         );
     }
+
+    let event = WebviewEvent {
+        account_id: args.account_id,
+        provider: args.provider,
+        kind: args.kind,
+        payload: args.payload,
+        ts: args.ts,
+    };
     app.emit("webview:event", &event)
         .map_err(|e| format!("emit failed: {e}"))?;
     Ok(())
