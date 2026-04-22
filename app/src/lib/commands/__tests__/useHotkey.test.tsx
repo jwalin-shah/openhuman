@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { StrictMode, useState } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { hotkeyManager } from '../hotkeyManager';
 import { ScopeContext } from '../ScopeContext';
 import { useHotkey } from '../useHotkey';
-import { hotkeyManager } from '../hotkeyManager';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -26,7 +27,7 @@ describe('useHotkey', () => {
     const { unmount } = render(
       <Wrapper frame={frame}>
         <TestHotkey shortcut="k" handler={handler} />
-      </Wrapper>,
+      </Wrapper>
     );
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
     expect(handler).toHaveBeenCalledTimes(1);
@@ -44,7 +45,7 @@ describe('useHotkey', () => {
         <Wrapper frame={frame}>
           <TestHotkey shortcut="k" handler={handler} />
         </Wrapper>
-      </StrictMode>,
+      </StrictMode>
     );
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
     expect(handler).toHaveBeenCalledTimes(1);
@@ -57,12 +58,12 @@ describe('useHotkey', () => {
     function Inner() {
       const [n, setN] = useState(0);
       useHotkey('k', () => calls.push(`v${n}`));
-      return <button onClick={() => setN((v) => v + 1)}>bump</button>;
+      return <button onClick={() => setN(v => v + 1)}>bump</button>;
     }
     const { getByText } = render(
       <Wrapper frame={frame}>
         <Inner />
-      </Wrapper>,
+      </Wrapper>
     );
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
     act(() => {

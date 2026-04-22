@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { registerGlobalActions, GROUP_ORDER } from '../globalActions';
+import type { NavigateFunction } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { GROUP_ORDER, registerGlobalActions } from '../globalActions';
 import { hotkeyManager } from '../hotkeyManager';
 import { registry } from '../registry';
-import type { NavigateFunction } from 'react-router-dom';
 
 beforeEach(() => {
   hotkeyManager.teardown();

@@ -1,7 +1,8 @@
 import { useContext, useEffect, useRef } from 'react';
-import { ScopeContext } from './ScopeContext';
-import { registry } from './registry';
+
 import { hotkeyManager } from './hotkeyManager';
+import { registry } from './registry';
+import { ScopeContext } from './ScopeContext';
 import { parseShortcut } from './shortcut';
 import type { Action } from './types';
 
@@ -19,7 +20,7 @@ export function useRegisterAction(action: Action): void {
     const stableEnabled = action.enabled ? () => enabledRef.current?.() ?? true : undefined;
     const disposeRegistry = registry.registerAction(
       { ...action, handler: stable, enabled: stableEnabled },
-      frame,
+      frame
     );
     let bindingSym: symbol | undefined;
     if (action.shortcut) {

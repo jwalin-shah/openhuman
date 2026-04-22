@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { parseShortcut, matchEvent, formatShortcut } from '../shortcut';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { formatShortcut, matchEvent, parseShortcut } from '../shortcut';
 
 describe('parseShortcut', () => {
   it('parses mod+k', () => {

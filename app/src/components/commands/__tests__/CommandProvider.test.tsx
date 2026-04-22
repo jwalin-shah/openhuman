@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import CommandProvider from '../CommandProvider';
+import { beforeEach, describe, expect, it } from 'vitest';
+
 import { hotkeyManager } from '../../../lib/commands/hotkeyManager';
 import { pressKey } from '../../../test/commandTestUtils';
+import CommandProvider from '../CommandProvider';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -17,7 +18,7 @@ describe('CommandProvider', () => {
         <CommandProvider>
           <div>child</div>
         </CommandProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     expect(screen.getByText('child')).toBeInTheDocument();
   });
@@ -28,14 +29,12 @@ describe('CommandProvider', () => {
         <CommandProvider>
           <div>child</div>
         </CommandProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     act(() => {
       pressKey({ key: 'k', mod: true });
     });
-    expect(
-      await screen.findByRole('dialog', { name: /Command palette/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: /Command palette/i })).toBeInTheDocument();
   });
 
   it.skip('opens help on ? (disabled — help overlay temporarily off)', async () => {
@@ -44,14 +43,12 @@ describe('CommandProvider', () => {
         <CommandProvider>
           <div>child</div>
         </CommandProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     act(() => {
       pressKey({ key: '?' });
     });
-    expect(
-      await screen.findByRole('dialog', { name: /Keyboard shortcuts/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: /Keyboard shortcuts/i })).toBeInTheDocument();
   });
 
   it('Esc closes open overlay', async () => {
@@ -61,7 +58,7 @@ describe('CommandProvider', () => {
         <CommandProvider>
           <div>child</div>
         </CommandProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     act(() => {
       pressKey({ key: 'k', mod: true });
@@ -77,22 +74,16 @@ describe('CommandProvider', () => {
         <CommandProvider>
           <div>child</div>
         </CommandProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     act(() => {
       pressKey({ key: 'k', mod: true });
     });
-    expect(
-      await screen.findByRole('dialog', { name: /Command palette/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: /Command palette/i })).toBeInTheDocument();
     act(() => {
       pressKey({ key: '?' });
     });
-    expect(
-      await screen.findByRole('dialog', { name: /Keyboard shortcuts/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('dialog', { name: /Command palette/i }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: /Keyboard shortcuts/i })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: /Command palette/i })).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ScopeContext } from '../../lib/commands/ScopeContext';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
+
 import { hotkeyManager } from '../../lib/commands/hotkeyManager';
+import { ScopeContext } from '../../lib/commands/ScopeContext';
 import type { ScopeKind } from '../../lib/commands/types';
 
 interface Props {

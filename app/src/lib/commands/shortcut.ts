@@ -39,7 +39,7 @@ export function parseShortcut(raw: ShortcutString): ParsedShortcut {
   const tokens = raw
     .toLowerCase()
     .split('+')
-    .map((t) => t.trim())
+    .map(t => t.trim())
     .filter(Boolean);
   if (tokens.length === 0) throw new Error(`parseShortcut: invalid shortcut "${raw}"`);
   const key = tokens[tokens.length - 1];

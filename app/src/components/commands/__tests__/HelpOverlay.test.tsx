@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import HelpOverlay from '../HelpOverlay';
-import { ScopeContext } from '../../../lib/commands/ScopeContext';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { hotkeyManager } from '../../../lib/commands/hotkeyManager';
 import { registry } from '../../../lib/commands/registry';
+import { ScopeContext } from '../../../lib/commands/ScopeContext';
+import HelpOverlay from '../HelpOverlay';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -22,13 +23,13 @@ describe('HelpOverlay', () => {
         handler: vi.fn(),
         shortcut: 'mod+1',
       },
-      f,
+      f
     );
     hotkeyManager.bind(f, { shortcut: 'mod+1', handler: vi.fn(), id: 'nav.home' });
     render(
       <ScopeContext.Provider value={f}>
         <HelpOverlay open={true} onOpenChange={() => {}} />
-      </ScopeContext.Provider>,
+      </ScopeContext.Provider>
     );
     expect(screen.getByText('Go Home')).toBeInTheDocument();
     expect(screen.getByText(/Actions/i)).toBeInTheDocument();
@@ -40,7 +41,7 @@ describe('HelpOverlay', () => {
     render(
       <ScopeContext.Provider value={f}>
         <HelpOverlay open={true} onOpenChange={() => {}} />
-      </ScopeContext.Provider>,
+      </ScopeContext.Provider>
     );
     expect(screen.getByText('Toggle foo')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Shortcuts/i, level: 3 })).toBeInTheDocument();
@@ -51,18 +52,18 @@ describe('HelpOverlay', () => {
     const p = hotkeyManager.pushFrame('page', 'home');
     registry.registerAction(
       { id: 'nav.home', label: 'Go Home global', handler: vi.fn(), shortcut: 'mod+1' },
-      g,
+      g
     );
     registry.registerAction(
       { id: 'nav.home', label: 'Go Home page', handler: vi.fn(), shortcut: 'mod+1' },
-      p,
+      p
     );
     hotkeyManager.bind(g, { shortcut: 'mod+1', handler: vi.fn(), id: 'nav.home' });
     hotkeyManager.bind(p, { shortcut: 'mod+1', handler: vi.fn(), id: 'nav.home' });
     render(
       <ScopeContext.Provider value={p}>
         <HelpOverlay open={true} onOpenChange={() => {}} />
-      </ScopeContext.Provider>,
+      </ScopeContext.Provider>
     );
     const matches = screen.queryAllByText(/Go Home/);
     expect(matches.length).toBe(1);

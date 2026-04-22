@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import CommandPalette from '../CommandPalette';
-import { ScopeContext } from '../../../lib/commands/ScopeContext';
-import { registry } from '../../../lib/commands/registry';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { hotkeyManager } from '../../../lib/commands/hotkeyManager';
+import { registry } from '../../../lib/commands/registry';
+import { ScopeContext } from '../../../lib/commands/ScopeContext';
+import CommandPalette from '../CommandPalette';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -30,7 +31,7 @@ function Harness({
       group: 'Navigation',
       shortcut: 'mod+,',
     },
-    frame,
+    frame
   );
   return (
     <ScopeContext.Provider value={frame}>
@@ -61,7 +62,7 @@ describe('CommandPalette', () => {
     await user.type(input, 'settings');
     await user.keyboard('{Enter}');
     await act(async () => {
-      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      await new Promise(r => requestAnimationFrame(() => r(null)));
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });

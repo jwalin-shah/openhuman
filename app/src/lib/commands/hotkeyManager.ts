@@ -1,5 +1,5 @@
-import type { ActiveBinding, HotkeyBinding, ScopeFrame, ScopeKind } from './types';
 import { matchEvent, parseShortcut } from './shortcut';
+import type { ActiveBinding, HotkeyBinding, ScopeFrame, ScopeKind } from './types';
 
 interface FrameInternal extends ScopeFrame {
   bindings: Map<symbol, { binding: HotkeyBinding; parsed: ReturnType<typeof parseShortcut> }>;
@@ -59,9 +59,7 @@ export function createHotkeyManager(): HotkeyManager {
         try {
           const r = binding.handler();
           if (r && typeof (r as Promise<unknown>).catch === 'function') {
-            (r as Promise<unknown>).catch((err) =>
-              console.error('[hotkey] handler rejected', err),
-            );
+            (r as Promise<unknown>).catch(err => console.error('[hotkey] handler rejected', err));
           }
         } catch (err) {
           console.error('[hotkey] handler threw', err);
@@ -93,14 +91,14 @@ export function createHotkeyManager(): HotkeyManager {
   }
 
   function popFrame(sym: symbol): void {
-    const idx = stack.findIndex((f) => f.symbol === sym);
+    const idx = stack.findIndex(f => f.symbol === sym);
     if (idx === -1) return;
     stack.splice(idx, 1);
     notify();
   }
 
   function bind(frameSym: symbol, binding: HotkeyBinding): symbol {
-    const frame = stack.find((f) => f.symbol === frameSym);
+    const frame = stack.find(f => f.symbol === frameSym);
     if (!frame) throw new Error('hotkeyManager.bind: unknown frame');
     const parsed = parseShortcut(binding.shortcut);
     const sym = Symbol(binding.id ?? binding.shortcut);
@@ -110,13 +108,13 @@ export function createHotkeyManager(): HotkeyManager {
   }
 
   function unbind(frameSym: symbol, bindingSym: symbol): void {
-    const frame = stack.find((f) => f.symbol === frameSym);
+    const frame = stack.find(f => f.symbol === frameSym);
     if (!frame) return;
     if (frame.bindings.delete(bindingSym)) notify();
   }
 
   function getStackSymbols(): symbol[] {
-    return stack.map((f) => f.symbol);
+    return stack.map(f => f.symbol);
   }
 
   function getActiveBindings(): ActiveBinding[] {

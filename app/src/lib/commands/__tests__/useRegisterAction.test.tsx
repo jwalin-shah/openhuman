@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { ScopeContext } from '../ScopeContext';
-import { useRegisterAction } from '../useRegisterAction';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { hotkeyManager } from '../hotkeyManager';
 import { registry } from '../registry';
+import { ScopeContext } from '../ScopeContext';
+import { useRegisterAction } from '../useRegisterAction';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -35,7 +36,7 @@ describe('useRegisterAction', () => {
     const { unmount } = render(
       <Wrapper frame={frame}>
         <TestAction id="x.y" handler={handler} />
-      </Wrapper>,
+      </Wrapper>
     );
     expect(registry.getAction('x.y')?.id).toBe('x.y');
     unmount();
@@ -51,7 +52,7 @@ describe('useRegisterAction', () => {
     render(
       <Wrapper frame={frame}>
         <TestAction id="x.y" shortcut="k" handler={handler} />
-      </Wrapper>,
+      </Wrapper>
     );
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
     expect(handler).toHaveBeenCalled();

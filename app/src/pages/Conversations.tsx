@@ -128,7 +128,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const [showLimitModal, setShowLimitModal] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);

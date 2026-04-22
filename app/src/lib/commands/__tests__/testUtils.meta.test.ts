@@ -1,4 +1,5 @@
 import { describe, it } from 'vitest';
+
 import { __metaAssertPressKeyReachesCaptureListener } from '../../../test/commandTestUtils';
 
 describe('commandTestUtils', () => {

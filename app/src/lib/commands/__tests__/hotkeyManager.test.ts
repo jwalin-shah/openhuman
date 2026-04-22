@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { createHotkeyManager } from '../hotkeyManager';
 
 function dispatchKey(key: string, opts: Partial<KeyboardEventInit> = {}): KeyboardEvent {
@@ -20,7 +21,7 @@ describe('hotkeyManager', () => {
   it('init is idempotent', () => {
     const listenerSpy = vi.spyOn(window, 'addEventListener');
     mgr.init();
-    const keydownCalls = listenerSpy.mock.calls.filter((c) => c[0] === 'keydown');
+    const keydownCalls = listenerSpy.mock.calls.filter(c => c[0] === 'keydown');
     expect(keydownCalls.length).toBe(0);
     listenerSpy.mockRestore();
   });
@@ -39,7 +40,13 @@ describe('hotkeyManager', () => {
     const handler = vi.fn();
     mgr.bind(frame, { shortcut: 'escape', handler });
     let bubbled = false;
-    window.addEventListener('keydown', () => { bubbled = true; }, { once: true });
+    window.addEventListener(
+      'keydown',
+      () => {
+        bubbled = true;
+      },
+      { once: true }
+    );
     dispatchKey('Escape');
     expect(bubbled).toBe(true);
   });
@@ -75,7 +82,9 @@ describe('hotkeyManager', () => {
     const frame = mgr.pushFrame('global', 'root');
     const handler = vi.fn();
     mgr.bind(frame, { shortcut: 'k', handler });
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true })
+    );
     expect(handler).not.toHaveBeenCalled();
     input.remove();
   });
@@ -87,7 +96,9 @@ describe('hotkeyManager', () => {
     const frame = mgr.pushFrame('global', 'root');
     const handler = vi.fn();
     mgr.bind(frame, { shortcut: 'k', handler, allowInInput: true });
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true })
+    );
     expect(handler).toHaveBeenCalled();
     input.remove();
   });
@@ -96,7 +107,9 @@ describe('hotkeyManager', () => {
     const g = mgr.pushFrame('global', 'root');
     const p = mgr.pushFrame('page', 'home');
     const m = mgr.pushFrame('modal', 'dialog');
-    const gh = vi.fn(), ph = vi.fn(), mh = vi.fn();
+    const gh = vi.fn(),
+      ph = vi.fn(),
+      mh = vi.fn();
     mgr.bind(g, { shortcut: 'escape', handler: gh });
     mgr.bind(p, { shortcut: 'escape', handler: ph });
     mgr.bind(m, { shortcut: 'escape', handler: mh });
@@ -129,7 +142,12 @@ describe('hotkeyManager', () => {
   it('sync throw in handler does not break listener', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const f = mgr.pushFrame('global', 'root');
-    mgr.bind(f, { shortcut: 'k', handler: () => { throw new Error('boom'); } });
+    mgr.bind(f, {
+      shortcut: 'k',
+      handler: () => {
+        throw new Error('boom');
+      },
+    });
     const h2 = vi.fn();
     mgr.bind(f, { shortcut: 'j', handler: h2 });
     dispatchKey('k');
@@ -144,7 +162,7 @@ describe('hotkeyManager', () => {
     const f = mgr.pushFrame('global', 'root');
     mgr.bind(f, { shortcut: 'k', handler: () => Promise.reject(new Error('boom')) });
     dispatchKey('k');
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
     expect(err).toHaveBeenCalled();
     err.mockRestore();
   });

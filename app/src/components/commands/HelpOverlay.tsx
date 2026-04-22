@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { registry } from '../../lib/commands/registry';
+import { useEffect, useMemo, useState } from 'react';
+
 import { hotkeyManager } from '../../lib/commands/hotkeyManager';
-import Kbd from './Kbd';
+import { registry } from '../../lib/commands/registry';
 import type { ActiveBinding, RegisteredAction } from '../../lib/commands/types';
+import Kbd from './Kbd';
 
 interface Props {
   open: boolean;
@@ -16,18 +17,16 @@ function canonicalize(shortcut: string): string {
 
 export default function HelpOverlay({ open, onOpenChange }: Props) {
   const [actions, setActions] = useState<RegisteredAction[]>(() =>
-    registry.getActiveActions(hotkeyManager.getStackSymbols()).filter((a) => !!a.shortcut),
+    registry.getActiveActions(hotkeyManager.getStackSymbols()).filter(a => !!a.shortcut)
   );
   const [bindings, setBindings] = useState<ActiveBinding[]>(() =>
-    hotkeyManager.getActiveBindings(),
+    hotkeyManager.getActiveBindings()
   );
 
   useEffect(() => {
     const refresh = () => {
       setActions(
-        registry
-          .getActiveActions(hotkeyManager.getStackSymbols())
-          .filter((a) => !!a.shortcut),
+        registry.getActiveActions(hotkeyManager.getStackSymbols()).filter(a => !!a.shortcut)
       );
       setBindings(hotkeyManager.getActiveBindings());
     };
@@ -42,10 +41,9 @@ export default function HelpOverlay({ open, onOpenChange }: Props) {
 
   const { actionRows, shortcutRows } = useMemo(() => {
     const actionRows = [...actions].sort(
-      (a, b) =>
-        (a.group ?? '').localeCompare(b.group ?? '') || a.label.localeCompare(b.label),
+      (a, b) => (a.group ?? '').localeCompare(b.group ?? '') || a.label.localeCompare(b.label)
     );
-    const actionShortcutKeys = new Set(actions.map((a) => canonicalize(a.shortcut!)));
+    const actionShortcutKeys = new Set(actions.map(a => canonicalize(a.shortcut!)));
     const seen = new Set<string>();
     const shortcutRows: ActiveBinding[] = [];
     for (const b of bindings) {
@@ -64,8 +62,7 @@ export default function HelpOverlay({ open, onOpenChange }: Props) {
         <Dialog.Overlay className="fixed inset-0 bg-cmd-overlay z-40" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(560px,calc(100vw-32px))] max-h-[80vh] overflow-auto bg-cmd-surface text-cmd-foreground border border-cmd-border rounded-xl shadow-cmd-palette z-50 p-4"
-          aria-label="Keyboard shortcuts"
-        >
+          aria-label="Keyboard shortcuts">
           <Dialog.Title className="sr-only">Keyboard shortcuts</Dialog.Title>
           <Dialog.Description className="sr-only">
             List of available keyboard shortcuts grouped by category.
@@ -74,7 +71,7 @@ export default function HelpOverlay({ open, onOpenChange }: Props) {
             <section aria-label="Actions">
               <h3 className="text-xs uppercase text-cmd-foreground-muted mb-2">Actions</h3>
               <ul className="space-y-1">
-                {actionRows.map((a) => (
+                {actionRows.map(a => (
                   <li key={a.id} className="flex items-center justify-between py-1">
                     <span>{a.label}</span>
                     <Kbd shortcut={a.shortcut!} />

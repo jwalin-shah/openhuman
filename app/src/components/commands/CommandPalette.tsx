@@ -1,10 +1,11 @@
-import { useSyncExternalStore, useMemo } from 'react';
-import { Command } from 'cmdk';
 import * as Dialog from '@radix-ui/react-dialog';
-import { registry } from '../../lib/commands/registry';
+import { Command } from 'cmdk';
+import { useMemo, useSyncExternalStore } from 'react';
+
 import { hotkeyManager } from '../../lib/commands/hotkeyManager';
-import Kbd from './Kbd';
+import { registry } from '../../lib/commands/registry';
 import type { RegisteredAction } from '../../lib/commands/types';
+import Kbd from './Kbd';
 
 interface Props {
   open: boolean;
@@ -43,7 +44,7 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
       if (bi === -1) return -1;
       return ai - bi;
     });
-    return keys.map((k) => [k, byGroup.get(k)!] as const);
+    return keys.map(k => [k, byGroup.get(k)!] as const);
   }, [actions]);
 
   function runAction(action: RegisteredAction): void {
@@ -59,8 +60,7 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
         <Dialog.Overlay className="fixed inset-0 bg-cmd-overlay z-40" />
         <Dialog.Content
           className="fixed left-1/2 top-[20vh] -translate-x-1/2 w-[min(640px,calc(100vw-32px))] bg-cmd-surface text-cmd-foreground border border-cmd-border rounded-xl shadow-cmd-palette z-50 overflow-hidden"
-          aria-label="Command palette"
-        >
+          aria-label="Command palette">
           <Dialog.Title className="sr-only">Command palette</Dialog.Title>
           <Dialog.Description className="sr-only">
             Search and run commands. Use arrow keys to navigate, Enter to select, Escape to close.
@@ -80,16 +80,14 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
                 <Command.Group
                   key={groupName}
                   heading={groupName}
-                  className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:text-cmd-foreground-muted"
-                >
-                  {items.map((action) => (
+                  className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:text-cmd-foreground-muted">
+                  {items.map(action => (
                     <Command.Item
                       key={action.id}
                       value={action.id}
                       keywords={[action.label, ...(action.keywords ?? [])]}
                       onSelect={() => runAction(action)}
-                      className="flex items-center gap-3 px-4 py-2 cursor-pointer aria-selected:bg-cmd-surface-elevated"
-                    >
+                      className="flex items-center gap-3 px-4 py-2 cursor-pointer aria-selected:bg-cmd-surface-elevated">
                       {action.icon ? (
                         <action.icon className="w-4 h-4 text-cmd-foreground-muted" />
                       ) : (

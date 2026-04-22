@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+
 import Kbd from '../Kbd';
 
 function withPlatform(value: string, fn: () => void) {

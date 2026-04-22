@@ -1,5 +1,5 @@
-import type { Action, RegisteredAction } from './types';
 import { parseShortcut } from './shortcut';
+import type { Action, RegisteredAction } from './types';
 
 export interface Registry {
   registerAction: (action: Action, scopeFrame: symbol) => () => void;
@@ -24,7 +24,7 @@ export function createRegistry(): Registry {
   }
 
   function stackKey(stack: symbol[]): string {
-    return `${version}:${stack.map((s) => s.description ?? '?').join('>')}:${stack.length}`;
+    return `${version}:${stack.map(s => s.description ?? '?').join('>')}:${stack.length}`;
   }
 
   function registerAction(action: Action, scopeFrame: symbol): () => void {
@@ -34,9 +34,7 @@ export function createRegistry(): Registry {
       byFrame.set(scopeFrame, frame);
     }
     if (frame.has(action.id)) {
-      console.warn(
-        `[commands] duplicate action id "${action.id}" in the same scope — replacing`,
-      );
+      console.warn(`[commands] duplicate action id "${action.id}" in the same scope — replacing`);
     }
     const registered: RegisteredAction = { ...action, scopeFrame };
     if (action.shortcut) parseShortcut(action.shortcut);
@@ -99,7 +97,7 @@ export function createRegistry(): Registry {
     try {
       const r = action.handler();
       if (r instanceof Promise)
-        r.catch((err) => console.error('[commands] action rejected', id, err));
+        r.catch(err => console.error('[commands] action rejected', id, err));
     } catch (err) {
       console.error('[commands] action threw', id, err);
     }

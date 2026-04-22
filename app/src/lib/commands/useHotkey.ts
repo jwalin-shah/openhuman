@@ -1,6 +1,7 @@
 import { useContext, useEffect, useRef } from 'react';
-import { ScopeContext } from './ScopeContext';
+
 import { hotkeyManager } from './hotkeyManager';
+import { ScopeContext } from './ScopeContext';
 import type { HotkeyBinding } from './types';
 
 type HotkeyOptions = Omit<HotkeyBinding, 'shortcut' | 'handler'>;
@@ -8,7 +9,7 @@ type HotkeyOptions = Omit<HotkeyBinding, 'shortcut' | 'handler'>;
 export function useHotkey(
   shortcut: string,
   handler: () => void,
-  options: HotkeyOptions = {},
+  options: HotkeyOptions = {}
 ): void {
   const frame = useContext(ScopeContext);
   const handlerRef = useRef(handler);

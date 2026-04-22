@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
 import { StrictMode } from 'react';
-import CommandScope from '../CommandScope';
+import { beforeEach, describe, expect, it } from 'vitest';
+
 import { hotkeyManager } from '../../../lib/commands/hotkeyManager';
+import CommandScope from '../CommandScope';
 
 beforeEach(() => {
   hotkeyManager.teardown();
@@ -14,7 +15,7 @@ describe('CommandScope', () => {
     const { unmount } = render(
       <CommandScope id="home">
         <div />
-      </CommandScope>,
+      </CommandScope>
     );
     expect(hotkeyManager.getStackSymbols().length).toBe(1);
     unmount();
@@ -27,7 +28,7 @@ describe('CommandScope', () => {
         <CommandScope id="home">
           <div />
         </CommandScope>
-      </StrictMode>,
+      </StrictMode>
     );
     expect(hotkeyManager.getStackSymbols().length).toBe(1);
   });
@@ -38,7 +39,7 @@ describe('CommandScope', () => {
         <CommandScope id="modal" kind="modal">
           <div />
         </CommandScope>
-      </CommandScope>,
+      </CommandScope>
     );
     expect(hotkeyManager.getStackSymbols().length).toBe(2);
   });

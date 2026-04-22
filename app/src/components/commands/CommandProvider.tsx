@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ScopeContext } from '../../lib/commands/ScopeContext';
+
+import { registerGlobalActions } from '../../lib/commands/globalActions';
 import { hotkeyManager } from '../../lib/commands/hotkeyManager';
 import { registry } from '../../lib/commands/registry';
-import { registerGlobalActions } from '../../lib/commands/globalActions';
+import { ScopeContext } from '../../lib/commands/ScopeContext';
 import CommandPalette from './CommandPalette';
 import HelpOverlay from './HelpOverlay';
 
@@ -57,7 +58,7 @@ export default function CommandProvider({ children }: Props) {
       shortcut: 'mod+k',
       handler: () => {
         setHelpOpen(false);
-        setPaletteOpen((o) => !o);
+        setPaletteOpen(o => !o);
       },
       allowInInput: true,
       id: 'meta.open-palette',

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { createRegistry } from '../registry';
 import type { Action } from '../types';
 
@@ -39,8 +40,8 @@ describe('registry', () => {
     reg.registerAction({ ...baseAction, label: 'global' }, f1);
     reg.registerAction({ ...baseAction, label: 'page' }, f2);
     const active = reg.getActiveActions([f1, f2]);
-    expect(active.filter((a) => a.id === 'a.test')).toHaveLength(1);
-    expect(active.find((a) => a.id === 'a.test')?.label).toBe('page');
+    expect(active.filter(a => a.id === 'a.test')).toHaveLength(1);
+    expect(active.find(a => a.id === 'a.test')?.label).toBe('page');
   });
 
   it('enabled:false excluded from active', () => {

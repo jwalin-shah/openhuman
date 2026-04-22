@@ -1,6 +1,7 @@
 import type { NavigateFunction } from 'react-router-dom';
-import { registry } from './registry';
+
 import { hotkeyManager } from './hotkeyManager';
+import { registry } from './registry';
 
 export const GROUP_ORDER = ['Navigation'] as const;
 
@@ -69,10 +70,6 @@ export function registerGlobalActions(
 
   for (const a of actions) {
     registry.registerAction(a, globalScopeSymbol);
-    hotkeyManager.bind(globalScopeSymbol, {
-      shortcut: a.shortcut,
-      handler: a.handler,
-      id: a.id,
-    });
+    hotkeyManager.bind(globalScopeSymbol, { shortcut: a.shortcut, handler: a.handler, id: a.id });
   }
 }
