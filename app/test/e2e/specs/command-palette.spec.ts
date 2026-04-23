@@ -56,11 +56,10 @@ describe('Command palette', () => {
     });
   });
 
-  it('opens help overlay via ?, lists all 6 seed actions, Esc closes', async () => {
-    await dispatchKey('?', { shift: true });
-
-    const heading = await browser.$('*=Keyboard shortcuts');
-    await heading.waitForExist({ timeout: 5000 });
+  it('palette lists the 5 seed nav actions, Esc closes', async () => {
+    await dispatchKey('k', { meta: true });
+    const input = await browser.$('input[role="combobox"]');
+    await input.waitForExist({ timeout: 5000 });
 
     const seedLabels = [
       'Go Home',
@@ -68,7 +67,6 @@ describe('Command palette', () => {
       'Go to Intelligence',
       'Go to Skills',
       'Open Settings',
-      'Show Keyboard Shortcuts',
     ];
     for (const label of seedLabels) {
       const el = await browser.$(`*=${label}`);
@@ -76,9 +74,9 @@ describe('Command palette', () => {
     }
 
     await dispatchKey('Escape');
-    await browser.waitUntil(async () => !(await heading.isExisting()), {
+    await browser.waitUntil(async () => !(await input.isExisting()), {
       timeout: 5000,
-      timeoutMsg: 'help overlay did not close on Escape',
+      timeoutMsg: 'palette did not close on Escape',
     });
   });
 

@@ -35,20 +35,29 @@ describe('hotkeyManager', () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
-  it('does NOT stopPropagation', () => {
+  it('does NOT stopPropagation / stopImmediatePropagation', () => {
     const frame = mgr.pushFrame('global', 'root');
     const handler = vi.fn();
     mgr.bind(frame, { shortcut: 'escape', handler });
-    let bubbled = false;
-    window.addEventListener(
-      'keydown',
-      () => {
-        bubbled = true;
-      },
-      { once: true }
-    );
-    dispatchKey('Escape');
-    expect(bubbled).toBe(true);
+    // Register a downstream listener that should still fire, plus spy on the
+    // event's propagation-stopping methods. The hotkey manager attaches at
+    // capture phase; our listener runs at the bubble phase.
+    const downstream = vi.fn();
+    const listener = (e: Event) => {
+      downstream();
+      // Verify the hotkey manager did not stop propagation or immediate
+      // propagation at any point.
+      expect((e as KeyboardEvent & { cancelBubble: boolean }).cancelBubble).toBe(false);
+    };
+    window.addEventListener('keydown', listener);
+    try {
+      const e = dispatchKey('Escape');
+      expect(handler).toHaveBeenCalled();
+      expect(downstream).toHaveBeenCalledTimes(1);
+      expect(e.cancelBubble).toBe(false);
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
   });
 
   it('skips when isComposing', () => {
@@ -162,7 +171,9 @@ describe('hotkeyManager', () => {
     const f = mgr.pushFrame('global', 'root');
     mgr.bind(f, { shortcut: 'k', handler: () => Promise.reject(new Error('boom')) });
     dispatchKey('k');
-    await new Promise(r => setTimeout(r, 0));
+    // Flush microtasks so the .catch fires without relying on real timers.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(err).toHaveBeenCalled();
     err.mockRestore();
   });

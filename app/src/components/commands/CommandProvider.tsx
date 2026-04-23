@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { registerGlobalActions } from '../../lib/commands/globalActions';
@@ -16,36 +16,18 @@ interface Props {
 export default function CommandProvider({ children }: Props) {
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
-
-  const setupDone = useRef(false);
-  const globalFrame = useRef<symbol | null>(null);
-
-  if (!setupDone.current) {
-    hotkeyManager.init();
-    globalFrame.current = hotkeyManager.pushFrame('global', 'root');
-    registry.setActiveStack(hotkeyManager.getStackSymbols());
-    registerGlobalActions(navigate, globalFrame.current);
-    setupDone.current = true;
-  }
+  const [globalFrame, setGlobalFrame] = useState<symbol | null>(null);
 
   useEffect(() => {
     instanceCount += 1;
     if (instanceCount > 1) {
       console.warn('[commands] CommandProvider mounted more than once — this is unsupported');
     }
-    return () => {
-      instanceCount -= 1;
-    };
-  }, []);
-
-  useEffect(() => {
+    hotkeyManager.init();
+    const frame = hotkeyManager.pushFrame('global', 'root');
     registry.setActiveStack(hotkeyManager.getStackSymbols());
-  });
-
-  useEffect(() => {
-    if (!globalFrame.current) return;
-    const frame = globalFrame.current;
-    const sym = hotkeyManager.bind(frame, {
+    const disposeGlobalActions = registerGlobalActions(navigate, frame);
+    const paletteBinding = hotkeyManager.bind(frame, {
       shortcut: 'mod+k',
       handler: () => {
         setPaletteOpen(o => !o);
@@ -53,11 +35,27 @@ export default function CommandProvider({ children }: Props) {
       allowInInput: true,
       id: 'meta.open-palette',
     });
-    return () => hotkeyManager.unbind(frame, sym);
-  }, []);
+    setGlobalFrame(frame);
 
-  const frame = globalFrame.current!;
-  const value = useMemo(() => frame, [frame]);
+    return () => {
+      disposeGlobalActions();
+      hotkeyManager.unbind(frame, paletteBinding);
+      hotkeyManager.popFrame(frame);
+      registry.setActiveStack(hotkeyManager.getStackSymbols());
+      instanceCount -= 1;
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!globalFrame) return;
+    registry.setActiveStack(hotkeyManager.getStackSymbols());
+  });
+
+  const value = useMemo(() => globalFrame, [globalFrame]);
+
+  if (!value) {
+    return null;
+  }
 
   return (
     <ScopeContext.Provider value={value}>

@@ -749,6 +749,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                     void dispatch(loadThreadMessages(thread.id));
                   }}
                   onKeyDown={e => {
+                    if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       dispatch(setSelectedThread(thread.id));

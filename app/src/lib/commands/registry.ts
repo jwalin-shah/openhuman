@@ -8,6 +8,18 @@ export interface Registry {
   subscribe: (listener: () => void) => () => void;
   runAction: (id: string) => boolean;
   setActiveStack: (stack: symbol[]) => void;
+  reset: () => void;
+}
+
+function shortcutDedupKey(shortcut: string): string {
+  try {
+    const p = parseShortcut(shortcut);
+    const flags =
+      (p.mod ? 'M' : '') + (p.ctrl ? 'C' : '') + (p.shift ? 'S' : '') + (p.alt ? 'A' : '');
+    return `${flags}|${p.key}`;
+  } catch {
+    return `raw|${shortcut}`;
+  }
 }
 
 export function createRegistry(): Registry {
@@ -16,6 +28,17 @@ export function createRegistry(): Registry {
   let version = 0;
   const snapshotCache = new Map<string, RegisteredAction[]>();
   let activeStack: symbol[] = [];
+  const symbolIds = new Map<symbol, number>();
+  let nextSymbolId = 1;
+
+  function getSymbolId(sym: symbol): number {
+    let id = symbolIds.get(sym);
+    if (!id) {
+      id = nextSymbolId++;
+      symbolIds.set(sym, id);
+    }
+    return id;
+  }
 
   function bump(): void {
     version += 1;
@@ -24,7 +47,7 @@ export function createRegistry(): Registry {
   }
 
   function stackKey(stack: symbol[]): string {
-    return `${version}:${stack.map(s => s.description ?? '?').join('>')}:${stack.length}`;
+    return `${version}:${stack.map(getSymbolId).join('>')}`;
   }
 
   function registerAction(action: Action, scopeFrame: symbol): () => void {
@@ -43,6 +66,7 @@ export function createRegistry(): Registry {
     return () => {
       const f = byFrame.get(scopeFrame);
       if (!f) return;
+      if (f.get(action.id) !== registered) return;
       if (f.delete(action.id)) {
         if (f.size === 0) byFrame.delete(scopeFrame);
         bump();
@@ -67,15 +91,24 @@ export function createRegistry(): Registry {
     const key = stackKey(scopeStack);
     const cached = snapshotCache.get(key);
     if (cached) return cached;
-    const seen = new Set<string>();
+    const seenId = new Set<string>();
+    const seenShortcut = new Set<string>();
     const out: RegisteredAction[] = [];
     for (let i = scopeStack.length - 1; i >= 0; i--) {
       const frame = byFrame.get(scopeStack[i]);
       if (!frame) continue;
       for (const action of frame.values()) {
-        if (seen.has(action.id)) continue;
+        if (seenId.has(action.id)) continue;
         if (action.enabled && !action.enabled()) continue;
-        seen.add(action.id);
+        if (action.shortcut) {
+          const sk = shortcutDedupKey(action.shortcut);
+          if (seenShortcut.has(sk)) {
+            seenId.add(action.id);
+            continue;
+          }
+          seenShortcut.add(sk);
+        }
+        seenId.add(action.id);
         out.push(action);
       }
     }
@@ -105,10 +138,33 @@ export function createRegistry(): Registry {
   }
 
   function setActiveStack(stack: symbol[]): void {
+    const changed =
+      stack.length !== activeStack.length || stack.some((sym, index) => sym !== activeStack[index]);
+    if (!changed) return;
     activeStack = [...stack];
+    snapshotCache.clear();
+    for (const l of listeners) l();
   }
 
-  return { registerAction, getAction, getActiveActions, subscribe, runAction, setActiveStack };
+  function reset(): void {
+    byFrame.clear();
+    listeners.clear();
+    snapshotCache.clear();
+    activeStack = [];
+    symbolIds.clear();
+    nextSymbolId = 1;
+    version = 0;
+  }
+
+  return {
+    registerAction,
+    getAction,
+    getActiveActions,
+    subscribe,
+    runAction,
+    setActiveStack,
+    reset,
+  };
 }
 
 export const registry = createRegistry();

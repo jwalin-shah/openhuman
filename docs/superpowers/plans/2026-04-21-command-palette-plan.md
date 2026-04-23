@@ -1,5 +1,7 @@
 # Command Palette + Keyboard Shortcut System — Implementation Plan
 
+> **Status:** Shipped in PR #745. This file is retained as historical design context. For the current behavior, read the source in `app/src/lib/commands/` and `app/src/components/commands/`. Known planning-time bugs called out by review (symbol.description cache keys, render-side side effects, missing disposers, `?` shortcut matching, stale `enabled` refs) have been addressed in the implementation — see the PR review thread resolutions.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a `⌘K` command palette, global action registry, keyboard shortcut hook, and `?` help overlay for OpenHuman, matching Superhuman/Linear/Raycast UX.
@@ -94,7 +96,7 @@ if (typeof window !== 'undefined') {
 - [ ] **Step 2: Run Tauri dev build**
 
 ```bash
-cd /Users/jwalinshah/projects/openhuman-frontend
+# From the repository root:
 yarn --cwd app dev:app
 ```
 

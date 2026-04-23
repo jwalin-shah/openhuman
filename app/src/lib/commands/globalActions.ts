@@ -5,7 +5,10 @@ import { registry } from './registry';
 
 export const GROUP_ORDER = ['Navigation'] as const;
 
-export function registerGlobalActions(navigate: NavigateFunction, globalScopeSymbol: symbol): void {
+export function registerGlobalActions(
+  navigate: NavigateFunction,
+  globalScopeSymbol: symbol
+): () => void {
   const nav = (path: string) => () => {
     navigate(path);
   };
@@ -53,8 +56,21 @@ export function registerGlobalActions(navigate: NavigateFunction, globalScopeSym
     },
   ];
 
+  const disposers: Array<() => void> = [];
   for (const a of actions) {
-    registry.registerAction(a, globalScopeSymbol);
-    hotkeyManager.bind(globalScopeSymbol, { shortcut: a.shortcut, handler: a.handler, id: a.id });
+    const disposeRegistry = registry.registerAction(a, globalScopeSymbol);
+    const bindingSym = hotkeyManager.bind(globalScopeSymbol, {
+      shortcut: a.shortcut,
+      handler: a.handler,
+      id: a.id,
+    });
+    disposers.push(() => {
+      disposeRegistry();
+      hotkeyManager.unbind(globalScopeSymbol, bindingSym);
+    });
   }
+
+  return () => {
+    for (const d of disposers) d();
+  };
 }

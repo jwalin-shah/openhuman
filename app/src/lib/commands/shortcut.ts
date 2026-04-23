@@ -85,7 +85,10 @@ export function matchEvent(parsed: ParsedShortcut, e: KeyboardEvent): boolean {
     // non-mac: don't double-check ctrl when mod is set (mod === ctrl)
     if (!parsed.mod && parsed.ctrl !== e.ctrlKey) return false;
   }
-  if (parsed.shift !== e.shiftKey) return false;
+  // For shifted punctuation (e.g. '?'), e.key already encodes the shift layer,
+  // so don't require an explicit `shift+` in the shortcut string.
+  const keyIsShiftedPunct = parsed.key.length === 1 && /[^\p{L}\p{N}]/u.test(parsed.key);
+  if (!keyIsShiftedPunct && parsed.shift !== e.shiftKey) return false;
   if (parsed.alt !== e.altKey) return false;
   const eventKey = e.key.toLowerCase();
   return eventKey === parsed.key;

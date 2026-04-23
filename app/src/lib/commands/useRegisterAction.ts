@@ -14,10 +14,17 @@ export function useRegisterAction(action: Action): void {
   enabledRef.current = action.enabled;
 
   useEffect(() => {
+    if (!frame) {
+      throw new Error(
+        'useRegisterAction: no ScopeContext frame. Wrap your tree in a ScopeProvider (e.g. CommandProvider).'
+      );
+    }
     const stable = () => {
       handlerRef.current();
     };
-    const stableEnabled = action.enabled ? () => enabledRef.current?.() ?? true : undefined;
+    // Always route enabled through the ref so flipping it between undefined
+    // and a predicate takes effect without rebinding.
+    const stableEnabled = () => enabledRef.current?.() ?? true;
     const disposeRegistry = registry.registerAction(
       { ...action, handler: stable, enabled: stableEnabled },
       frame
@@ -39,5 +46,13 @@ export function useRegisterAction(action: Action): void {
       disposeRegistry();
       if (bindingSym) hotkeyManager.unbind(frame, bindingSym);
     };
-  }, [action.id, action.shortcut, frame]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    action.id,
+    action.shortcut,
+    action.allowInInput,
+    action.repeat,
+    action.preventDefault,
+    frame,
+  ]);
 }

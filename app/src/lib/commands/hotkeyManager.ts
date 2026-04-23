@@ -46,8 +46,11 @@ export function createHotkeyManager(): HotkeyManager {
 
     const inEditable = isEditableTarget(e);
 
-    for (let i = stack.length - 1; i >= 0; i--) {
-      const frame = stack[i];
+    // Snapshot frames + bindings so handlers that push/pop frames
+    // or bind/unbind during dispatch can't corrupt iteration.
+    const frames = stack.slice();
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const frame = frames[i];
       const entries = [...frame.bindings.entries()];
       for (let j = entries.length - 1; j >= 0; j--) {
         const [, { binding, parsed }] = entries[j];
@@ -117,11 +120,26 @@ export function createHotkeyManager(): HotkeyManager {
     return stack.map(f => f.symbol);
   }
 
+  function bindingDedupKey(parsed: ReturnType<typeof parseShortcut>): string {
+    const flags =
+      (parsed.mod ? 'M' : '') +
+      (parsed.ctrl ? 'C' : '') +
+      (parsed.shift ? 'S' : '') +
+      (parsed.alt ? 'A' : '');
+    return `${flags}|${parsed.key}`;
+  }
+
   function getActiveBindings(): ActiveBinding[] {
     const out: ActiveBinding[] = [];
-    for (const frame of stack) {
+    const seen = new Set<string>();
+    // Walk top-of-stack downwards so inner scopes shadow outer ones.
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const frame = stack[i];
       for (const { binding, parsed } of frame.bindings.values()) {
         if (binding.enabled && !binding.enabled()) continue;
+        const key = bindingDedupKey(parsed);
+        if (seen.has(key)) continue;
+        seen.add(key);
         out.push({
           frame: { symbol: frame.symbol, id: frame.id, kind: frame.kind },
           binding,

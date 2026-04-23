@@ -1,28 +1,36 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hotkeyManager } from '../../../lib/commands/hotkeyManager';
 import { registry } from '../../../lib/commands/registry';
 import { ScopeContext } from '../../../lib/commands/ScopeContext';
 import CommandPalette from '../CommandPalette';
 
+let currentFrame: symbol;
+
 beforeEach(() => {
   hotkeyManager.teardown();
+  registry.reset();
   hotkeyManager.init();
+  currentFrame = hotkeyManager.pushFrame('global', 'root');
+  registry.setActiveStack([currentFrame]);
 });
 
-function Harness({
-  open,
-  onOpenChange,
-  handler,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  handler?: () => void;
-}) {
-  const frame = hotkeyManager.pushFrame('global', 'root');
-  registry.setActiveStack([frame]);
+afterEach(() => {
+  hotkeyManager.teardown();
+  registry.reset();
+});
+
+function Harness({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  return (
+    <ScopeContext.Provider value={currentFrame}>
+      <CommandPalette open={open} onOpenChange={onOpenChange} />
+    </ScopeContext.Provider>
+  );
+}
+
+function registerSettingsAction(handler?: () => void): void {
   registry.registerAction(
     {
       id: 'nav.settings',
@@ -31,22 +39,19 @@ function Harness({
       group: 'Navigation',
       shortcut: 'mod+,',
     },
-    frame
-  );
-  return (
-    <ScopeContext.Provider value={frame}>
-      <CommandPalette open={open} onOpenChange={onOpenChange} />
-    </ScopeContext.Provider>
+    currentFrame
   );
 }
 
 describe('CommandPalette', () => {
   it('renders registered actions when open', () => {
+    registerSettingsAction();
     render(<Harness open={true} onOpenChange={() => {}} />);
     expect(screen.getByText('Open Settings')).toBeInTheDocument();
   });
 
   it('filters by typed query', async () => {
+    registerSettingsAction();
     const user = userEvent.setup();
     render(<Harness open={true} onOpenChange={() => {}} />);
     const input = screen.getByRole('combobox');
@@ -55,6 +60,7 @@ describe('CommandPalette', () => {
   });
 
   it('fires handler on Enter and calls onOpenChange(false)', async () => {
+    registerSettingsAction();
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     render(<Harness open={true} onOpenChange={onOpenChange} />);

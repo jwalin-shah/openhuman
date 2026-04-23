@@ -50,13 +50,14 @@ describe('registry', () => {
     expect(reg.getActiveActions([frame])).toHaveLength(0);
   });
 
-  it('dedups by canonicalized shortcut', () => {
+  it('dedups by canonicalized shortcut (inner scope wins)', () => {
     const f1 = Symbol('global');
     const f2 = Symbol('page');
     reg.registerAction({ id: 'a', label: 'A', handler: vi.fn(), shortcut: 'mod+k' }, f1);
     reg.registerAction({ id: 'b', label: 'B', handler: vi.fn(), shortcut: 'mod+k' }, f2);
     const active = reg.getActiveActions([f1, f2]);
-    expect(active).toHaveLength(2);
+    expect(active).toHaveLength(1);
+    expect(active[0].id).toBe('b');
   });
 
   it('subscribe fires on register/unregister', () => {

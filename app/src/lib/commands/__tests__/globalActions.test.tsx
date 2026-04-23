@@ -1,5 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GROUP_ORDER, registerGlobalActions } from '../globalActions';
 import { hotkeyManager } from '../hotkeyManager';
@@ -7,7 +7,13 @@ import { registry } from '../registry';
 
 beforeEach(() => {
   hotkeyManager.teardown();
+  registry.reset();
   hotkeyManager.init();
+});
+
+afterEach(() => {
+  hotkeyManager.teardown();
+  registry.reset();
 });
 
 describe('registerGlobalActions', () => {

@@ -19,13 +19,16 @@ export function useHotkey(
 
   useEffect(() => {
     const stable = () => handlerRef.current();
+    // Always route `enabled` through the ref; callers can toggle it at any
+    // render without rebinding.
+    const stableEnabled = () => optsRef.current.enabled?.() ?? true;
     const sym = hotkeyManager.bind(frame, {
       shortcut,
       handler: stable,
       allowInInput: optsRef.current.allowInInput,
       repeat: optsRef.current.repeat,
       preventDefault: optsRef.current.preventDefault,
-      enabled: optsRef.current.enabled,
+      enabled: stableEnabled,
       description: optsRef.current.description,
       id: optsRef.current.id,
     });
