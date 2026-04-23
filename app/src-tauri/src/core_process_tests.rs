@@ -1,6 +1,5 @@
 use super::{
-    default_core_port, default_core_run_mode, same_executable_path, CoreProcessHandle,
-    CoreRunMode,
+    default_core_port, default_core_run_mode, same_executable_path, CoreProcessHandle, CoreRunMode,
 };
 
 struct EnvGuard {
