@@ -1,3 +1,5 @@
+//! Sibling tests extracted from core_process.rs — see PR #835.
+
 use super::{
     default_core_bin, default_core_port, default_core_run_mode, same_executable_path,
     CoreProcessHandle, CoreRunMode,
