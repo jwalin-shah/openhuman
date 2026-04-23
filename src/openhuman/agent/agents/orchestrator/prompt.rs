@@ -103,6 +103,7 @@ mod tests {
             connected_integrations: integrations,
             include_profile: false,
             include_memory_md: false,
+            curated_snapshot: None,
         }
     }
 
