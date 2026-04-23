@@ -102,8 +102,8 @@ pub struct BillingChargeResponse {
     pub charge_id: String,
 }
 
-// At startup:
-pub async fn register_billing_handlers() {
+// At startup (registration is sync — the handler closure is async):
+pub fn register_billing_handlers() {
     register_native_global::<BillingChargeRequest, BillingChargeResponse, _, _>(
         "billing.charge",
         |req| async move {
@@ -111,7 +111,7 @@ pub async fn register_billing_handlers() {
                 .map_err(|e| e.to_string())?;
             Ok(BillingChargeResponse { charge_id: id })
         },
-    ).await;
+    );
 }
 
 // From another module:
