@@ -19,6 +19,7 @@ impl Memory for MockMemory {
 
     async fn store(
         &self,
+        namespace: &str,
         key: &str,
         content: &str,
         category: MemoryCategory,
@@ -30,7 +31,7 @@ impl Memory for MockMemory {
                 id: key.to_string(),
                 key: key.to_string(),
                 content: content.to_string(),
-                namespace: None,
+                namespace: Some(namespace.to_string()),
                 category,
                 timestamp: "now".into(),
                 session_id: session_id.map(str::to_string),
@@ -44,25 +45,32 @@ impl Memory for MockMemory {
         &self,
         _query: &str,
         _limit: usize,
-        _session_id: Option<&str>,
+        _opts: crate::openhuman::memory::RecallOpts<'_>,
     ) -> anyhow::Result<Vec<MemoryEntry>> {
         Ok(Vec::new())
     }
 
-    async fn get(&self, key: &str) -> anyhow::Result<Option<MemoryEntry>> {
+    async fn get(&self, _namespace: &str, key: &str) -> anyhow::Result<Option<MemoryEntry>> {
         Ok(self.entries.lock().get(key).cloned())
     }
 
     async fn list(
         &self,
+        _namespace: Option<&str>,
         _category: Option<&MemoryCategory>,
         _session_id: Option<&str>,
     ) -> anyhow::Result<Vec<MemoryEntry>> {
         Ok(self.entries.lock().values().cloned().collect())
     }
 
-    async fn forget(&self, key: &str) -> anyhow::Result<bool> {
+    async fn forget(&self, _namespace: &str, key: &str) -> anyhow::Result<bool> {
         Ok(self.entries.lock().remove(key).is_some())
+    }
+
+    async fn namespace_summaries(
+        &self,
+    ) -> anyhow::Result<Vec<crate::openhuman::memory::NamespaceSummary>> {
+        Ok(Vec::new())
     }
 
     async fn count(&self) -> anyhow::Result<usize> {

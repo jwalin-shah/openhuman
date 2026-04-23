@@ -188,6 +188,7 @@ impl ReflectionHook {
             let key = format!("obs/{date}/{hash}");
             self.memory
                 .store(
+                    "learning_observations",
                     &key,
                     &content,
                     MemoryCategory::Custom("learning_observations".into()),
@@ -205,6 +206,7 @@ impl ReflectionHook {
             let key = format!("pat/{slug}");
             self.memory
                 .store(
+                    "learning_patterns",
                     &key,
                     pattern,
                     MemoryCategory::Custom("learning_patterns".into()),
@@ -219,6 +221,7 @@ impl ReflectionHook {
             let key = format!("pref/{slug}");
             self.memory
                 .store(
+                    "user_profile",
                     &key,
                     pref,
                     MemoryCategory::Custom("user_profile".into()),
