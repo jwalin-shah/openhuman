@@ -7,6 +7,7 @@ use rusqlite::{Connection, Result};
 const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("migrations/0001_init.sql"))];
 
 pub fn run(conn: &Connection) -> Result<()> {
+    log::debug!("[people][migrations] running migrations");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _people_migrations (
             name       TEXT PRIMARY KEY,
@@ -21,27 +22,22 @@ pub fn run(conn: &Connection) -> Result<()> {
             |row| row.get(0),
         )?;
         if already {
+            log::debug!("[people][migrations] skipping already-applied {name}");
             continue;
         }
 
-        conn.execute_batch("BEGIN")?;
-        let result = (|| -> Result<()> {
-            conn.execute_batch(sql)?;
-            conn.execute(
-                "INSERT INTO _people_migrations(name, applied_at) \
-                 VALUES (?1, CAST(strftime('%s','now') AS INTEGER))",
-                rusqlite::params![name],
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => conn.execute_batch("COMMIT")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e);
-            }
-        }
+        log::debug!("[people][migrations] applying {name}");
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
+            "INSERT INTO _people_migrations(name, applied_at) \
+             VALUES (?1, CAST(strftime('%s','now') AS INTEGER))",
+            rusqlite::params![name],
+        )?;
+        tx.commit()?;
+        log::debug!("[people][migrations] applied {name}");
     }
+    log::debug!("[people][migrations] all migrations completed");
     Ok(())
 }
 
