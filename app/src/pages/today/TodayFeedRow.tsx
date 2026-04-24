@@ -1,9 +1,10 @@
 /**
  * TodayFeedRow — single feed item with hover-revealed action menu.
  * Extracted from Today.tsx inline FeedRow; adds per-row actions.
+ * Supports keyboard navigation via the `isFocused` prop and `forwardRef`.
  */
 import debug from 'debug';
-import { useRef, useState } from 'react';
+import { forwardRef, useRef, useState } from 'react';
 
 import {
   ACTION_LABELS,
@@ -134,46 +135,52 @@ function ActionMenu({ item, onAction }: ActionMenuProps) {
 export interface TodayFeedRowProps {
   item: TodayFeedItem;
   onAction(action: TodayActionKind, item: TodayFeedItem): void;
+  /** When true, renders a keyboard-navigation focus ring on the row. */
+  isFocused?: boolean;
 }
 
-export function TodayFeedRow({ item, onAction }: TodayFeedRowProps) {
-  const badgeClasses = SOURCE_BADGE_CLASSES[item.source] ?? 'bg-stone-100 text-stone-500';
-  const sourceLabel = SOURCE_LABELS[item.source] ?? item.source;
-  const relTime = formatRelativeTime(item.timestamp_ms);
+export const TodayFeedRow = forwardRef<HTMLLIElement, TodayFeedRowProps>(
+  ({ item, onAction, isFocused = false }, ref) => {
+    const badgeClasses = SOURCE_BADGE_CLASSES[item.source] ?? 'bg-stone-100 text-stone-500';
+    const sourceLabel = SOURCE_LABELS[item.source] ?? item.source;
+    const relTime = formatRelativeTime(item.timestamp_ms);
 
-  return (
-    <li className="px-4 py-3 hover:bg-stone-50 transition-colors group">
-      <div className="flex items-start gap-3">
-        {/* Source badge */}
-        <span
-          className={`mt-0.5 shrink-0 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClasses}`}
-          data-source={item.source}>
-          {sourceLabel}
-        </span>
+    return (
+      <li
+        ref={ref}
+        className={`px-4 py-3 hover:bg-stone-50 transition-colors group${isFocused ? ' ring-2 ring-primary-400 ring-offset-1' : ''}`}>
+        <div className="flex items-start gap-3">
+          {/* Source badge */}
+          <span
+            className={`mt-0.5 shrink-0 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClasses}`}
+            data-source={item.source}>
+            {sourceLabel}
+          </span>
 
-        {/* Content */}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            {item.is_unread && (
-              <span
-                className="inline-block w-2 h-2 rounded-full bg-primary-500 shrink-0"
-                aria-label="unread"
-              />
-            )}
-            <p className="text-sm font-semibold text-stone-900 truncate">{item.title}</p>
+          {/* Content */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              {item.is_unread && (
+                <span
+                  className="inline-block w-2 h-2 rounded-full bg-primary-500 shrink-0"
+                  aria-label="unread"
+                />
+              )}
+              <p className="text-sm font-semibold text-stone-900 truncate">{item.title}</p>
+            </div>
+            {item.sender && <p className="text-xs text-stone-500 truncate">From: {item.sender}</p>}
+            <p className="mt-0.5 text-sm text-stone-600 line-clamp-2">{item.preview}</p>
           </div>
-          {item.sender && <p className="text-xs text-stone-500 truncate">From: {item.sender}</p>}
-          <p className="mt-0.5 text-sm text-stone-600 line-clamp-2">{item.preview}</p>
+
+          {/* Timestamp */}
+          <span className="shrink-0 text-[11px] text-stone-400 whitespace-nowrap">{relTime}</span>
+
+          {/* Hover action area */}
+          <ActionMenu item={item} onAction={onAction} />
         </div>
-
-        {/* Timestamp */}
-        <span className="shrink-0 text-[11px] text-stone-400 whitespace-nowrap">{relTime}</span>
-
-        {/* Hover action area */}
-        <ActionMenu item={item} onAction={onAction} />
-      </div>
-    </li>
-  );
-}
+      </li>
+    );
+  }
+);
 
 export default TodayFeedRow;

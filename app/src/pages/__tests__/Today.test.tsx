@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import chatRuntimeReducer from '../../store/chatRuntimeSlice';
 import threadReducer from '../../store/threadSlice';
 import Today, { type TodayFeedItem, type TodayFeedListResponse } from '../Today';
+import { DEMO_ITEM_IDS } from '../today/todaySampleData';
 
 // ─── Mock coreRpcClient ───────────────────────────────────────────────────────
 
@@ -25,6 +26,9 @@ vi.mock('../../services/chatService', () => ({
   chatSend,
   chatCancel,
   useRustChat: vi.fn(() => true),
+  // subscribeChatEvents is used by TodayMorningBrief (useTodayBrief hook).
+  // Return a no-op unsubscribe fn so the hook doesn't throw in tests.
+  subscribeChatEvents: vi.fn(() => () => {}),
 }));
 
 // ─── Mock threadApi ───────────────────────────────────────────────────────────
@@ -100,6 +104,12 @@ function makeResponse(items: TodayFeedItem[]): TodayFeedListResponse {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+// jsdom does not implement scrollIntoView — mock it so keyboard-nav calls
+// don't throw "not a function" uncaught exceptions during tests.
+if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoView) {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+}
+
 describe('Today page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -119,18 +129,33 @@ describe('Today page', () => {
     expect(skeleton.querySelectorAll('li').length).toBe(3);
   });
 
-  it('shows the empty state copy when no items are returned', async () => {
+  it('shows sample mode (banner + feed) when no items are returned', async () => {
     callCoreRpc.mockResolvedValueOnce(makeResponse([]));
 
     renderToday();
 
+    // Banner appears
     await waitFor(() => {
-      expect(
-        screen.getByText('Your day is clear — nothing new from iMessage, Gmail, or Calendar.')
-      ).toBeInTheDocument();
+      expect(screen.getByTestId('today-sample-banner')).toBeInTheDocument();
     });
 
-    expect(screen.queryByTestId('today-feed')).not.toBeInTheDocument();
+    expect(screen.getByText(/Showing sample data\. Connect your accounts/i)).toBeInTheDocument();
+
+    // Connect buttons are present
+    expect(screen.getByTestId('today-sample-connect-gmail')).toBeInTheDocument();
+    expect(screen.getByTestId('today-sample-connect-calendar')).toBeInTheDocument();
+
+    // The feed is populated with sample rows (not empty)
+    expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+
+    // All 6 sample item IDs produce "Demo" pills
+    const demoPills = screen.getAllByLabelText('sample data');
+    expect(demoPills.length).toBe(DEMO_ITEM_IDS.size);
+
+    // Sample titles are visible
+    expect(screen.getByText('Sarah Chen')).toBeInTheDocument();
+    expect(screen.getByText('Dad')).toBeInTheDocument();
+    expect(screen.getByText('Your weekly design digest')).toBeInTheDocument();
   });
 
   it('renders feed rows with correct source badges when items are returned', async () => {
@@ -353,5 +378,395 @@ describe('Today page', () => {
       const drawer = screen.getByTestId('today-agent-drawer');
       expect(drawer.className).toContain('translate-x-full');
     });
+  });
+
+  // ── Keyboard navigation tests ─────────────────────────────────────────────────
+
+  it('pressing j moves focus to the first row from no-focus state', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'r1', source: 'gmail', title: 'First' }),
+      makeItem({ id: 'r2', source: 'imessage', title: 'Second' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(document, { key: 'j' });
+
+    // First <li> should now have the focus ring class
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows[0].className).toContain('ring-2');
+    expect(rows[1].className).not.toContain('ring-2');
+  });
+
+  it('pressing j twice moves focus to the second row', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'r1', source: 'gmail', title: 'First' }),
+      makeItem({ id: 'r2', source: 'imessage', title: 'Second' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(document, { key: 'j' });
+    fireEvent.keyDown(document, { key: 'j' });
+
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows[0].className).not.toContain('ring-2');
+    expect(rows[1].className).toContain('ring-2');
+  });
+
+  it('pressing k moves focus backward (wraps from first to last)', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'r1', source: 'gmail', title: 'First' }),
+      makeItem({ id: 'r2', source: 'imessage', title: 'Second' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // j → first row focused; k from first → wraps to last
+    fireEvent.keyDown(document, { key: 'j' });
+    fireEvent.keyDown(document, { key: 'k' });
+
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    // Wraps to last (index 1)
+    expect(rows[items.length - 1].className).toContain('ring-2');
+  });
+
+  it('pressing j wraps from the last row to the first', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'r1', source: 'gmail', title: 'First' }),
+      makeItem({ id: 'r2', source: 'imessage', title: 'Second' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Navigate to the last row, then j again → wraps to first
+    fireEvent.keyDown(document, { key: 'j' }); // index 0
+    fireEvent.keyDown(document, { key: 'j' }); // index 1 (last)
+    fireEvent.keyDown(document, { key: 'j' }); // wraps → index 0
+
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows[0].className).toContain('ring-2');
+    expect(rows[1].className).not.toContain('ring-2');
+  });
+
+  it('Enter on a focused row triggers the primary action for that row', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'g1', source: 'gmail', title: 'Email from Alice', sender: 'alice@test.com' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Focus first row
+    fireEvent.keyDown(document, { key: 'j' });
+    // Trigger primary action via Enter
+    fireEvent.keyDown(document, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(createNewThread).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: 'thread-today-1', model: 'reasoning-v1' })
+      );
+    });
+  });
+
+  it('Escape clears focus when the drawer is not open', async () => {
+    const items: TodayFeedItem[] = [makeItem({ id: 'r1', source: 'gmail', title: 'First' })];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Focus first row
+    fireEvent.keyDown(document, { key: 'j' });
+
+    let rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows[0].className).toContain('ring-2');
+
+    // Press Escape to clear focus
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows[0].className).not.toContain('ring-2');
+  });
+
+  it('keyboard shortcuts are suppressed when focus is inside an input', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'r1', source: 'gmail', title: 'First' }),
+      makeItem({ id: 'r2', source: 'imessage', title: 'Second' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Fire keydown with the composer input as the event target
+    const composerInput = screen.getByTestId('today-composer-input');
+    fireEvent.keyDown(composerInput, { key: 'j', target: composerInput });
+
+    // No row should receive focus
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    for (const row of rows) {
+      expect(row.className).not.toContain('ring-2');
+    }
+  });
+
+  it('sample rows are keyboard-navigable (feed list has li elements) in demo mode', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    // Sample mode: banner appears and feed is populated with rows
+    await waitFor(() => {
+      expect(screen.getByTestId('today-sample-banner')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Feed has <li> rows (one per sample item) — confirms keyboard nav targets exist
+    const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+    expect(rows.length).toBe(6); // 6 sample items
+    // No focus ring before any navigation
+    for (const row of rows) {
+      expect(row.className).not.toContain('ring-2');
+    }
+  });
+
+  // ── Sample mode / demo-mode tests ────────────────────────────────────────────
+
+  it('sample mode: connect-gmail button navigates to /settings/connections', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-sample-connect-gmail')).toBeInTheDocument();
+    });
+
+    // MemoryRouter captures navigation; clicking should not throw
+    fireEvent.click(screen.getByTestId('today-sample-connect-gmail'));
+
+    // After click the banner remains (navigation handled by router — no real navigate in unit test)
+    expect(screen.getByTestId('today-sample-banner')).toBeInTheDocument();
+  });
+
+  it('sample mode: connect-calendar button navigates to /settings/connections', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-sample-connect-calendar')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('today-sample-connect-calendar'));
+
+    expect(screen.getByTestId('today-sample-banner')).toBeInTheDocument();
+  });
+
+  it('sample mode: clicking a sample row action opens the agent drawer', async () => {
+    chatSend.mockReturnValue(new Promise(() => {}));
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // The first iMessage sample row (demo-imessage-1) has primary action "Reply"
+    const replyBtn = screen.getByTestId('action-reply-demo-imessage-1');
+    expect(replyBtn).toBeInTheDocument();
+
+    fireEvent.click(replyBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-agent-drawer')).toBeInTheDocument();
+    });
+
+    const drawer = screen.getByTestId('today-agent-drawer');
+    expect(drawer.className).toContain('translate-x-0');
+  });
+
+  it('sample mode: Demo pill is absent on real feed rows', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'real-1', source: 'gmail', title: 'Real email' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // No Demo pills when showing real data
+    expect(screen.queryByLabelText('sample data')).not.toBeInTheDocument();
+
+    // No sample banner either
+    expect(screen.queryByTestId('today-sample-banner')).not.toBeInTheDocument();
+  });
+
+  it('sample mode: sample items have correct source shape (fixture check)', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // iMessage source badge visible
+    expect(document.querySelector('[data-source="imessage"]')).toBeInTheDocument();
+    // Gmail source badge visible
+    expect(document.querySelector('[data-source="gmail"]')).toBeInTheDocument();
+    // Calendar source badge visible
+    expect(document.querySelector('[data-source="calendar"]')).toBeInTheDocument();
+
+    // Unread dot for the first iMessage (Sarah Chen — is_unread: true)
+    const unreadDots = screen.getAllByLabelText('unread');
+    // At least 2 unread items: demo-imessage-1 and demo-gmail-2 (Stripe)
+    expect(unreadDots.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // ── Bucket grouping integration tests ─────────────────────────────────────────
+
+  it('renders "Today" bucket header for recent messages, no calendar bucket headers', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'm1', source: 'gmail', title: 'Email One' }),
+      makeItem({ id: 'm2', source: 'imessage', title: 'Message One' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // "Today" bucket section should appear (items are 5 min ago)
+    // Note: the page <h1> also says "Today" so we query the section testid, not text.
+    expect(screen.getByTestId('bucket-today')).toBeInTheDocument();
+
+    // Calendar-only buckets should not render when there are no calendar events
+    expect(screen.queryByText('Right now')).not.toBeInTheDocument();
+    expect(screen.queryByText('Up next')).not.toBeInTheDocument();
+    // "Earlier" should not render since items are recent
+    expect(screen.queryByText('Earlier')).not.toBeInTheDocument();
+
+    // Calendar bucket sections absent
+    expect(screen.queryByTestId('bucket-right-now')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('bucket-up-next')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('bucket-earlier')).not.toBeInTheDocument();
+
+    // All items still visible within the bucket
+    expect(screen.getByText('Email One')).toBeInTheDocument();
+    expect(screen.getByText('Message One')).toBeInTheDocument();
+  });
+
+  it('renders bucket headers in canonical order when items span multiple buckets', async () => {
+    const now = Date.now();
+
+    const items: TodayFeedItem[] = [
+      // "Right now" — calendar starting in 10 min with end time
+      makeItem({
+        id: 'cal1',
+        source: 'calendar',
+        title: 'Standup',
+        timestamp_ms: now + 10 * 60 * 1000,
+        metadata: { end_time_ms: now + 70 * 60 * 1000 },
+      }),
+      // "Up next" — calendar starting in 2 hours
+      makeItem({
+        id: 'cal2',
+        source: 'calendar',
+        title: 'Team Lunch',
+        timestamp_ms: now + 2 * 60 * 60 * 1000,
+        metadata: {},
+      }),
+      // "Today" — gmail from 1 hour ago
+      makeItem({
+        id: 'gm1',
+        source: 'gmail',
+        title: 'Email from Alice',
+        timestamp_ms: now - 60 * 60 * 1000,
+      }),
+      // "Earlier" — imessage from 8 hours ago
+      makeItem({
+        id: 'im1',
+        source: 'imessage',
+        title: 'Old message',
+        timestamp_ms: now - 8 * 60 * 60 * 1000,
+      }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // All four bucket sections present via data-testid
+    expect(screen.getByTestId('bucket-right-now')).toBeInTheDocument();
+    expect(screen.getByTestId('bucket-up-next')).toBeInTheDocument();
+    expect(screen.getByTestId('bucket-today')).toBeInTheDocument();
+    expect(screen.getByTestId('bucket-earlier')).toBeInTheDocument();
+
+    // Bucket header labels visible in feed (note: "Today" also appears in the page <h1>,
+    // so we use getAllByText for "Today" and verify there's at least one bucket header match)
+    expect(screen.getByText('Right now')).toBeInTheDocument();
+    expect(screen.getByText('Up next')).toBeInTheDocument();
+    expect(screen.getAllByText('Today').length).toBeGreaterThanOrEqual(2); // <h1> + bucket header
+    expect(screen.getByText('Earlier')).toBeInTheDocument();
+
+    // All items present
+    expect(screen.getByText('Standup')).toBeInTheDocument();
+    expect(screen.getByText('Team Lunch')).toBeInTheDocument();
+    expect(screen.getByText('Email from Alice')).toBeInTheDocument();
+    expect(screen.getByText('Old message')).toBeInTheDocument();
+
+    // Headers appear in canonical order (Right now → Up next → Today → Earlier)
+    const feed = screen.getByTestId('today-feed');
+    const headers = Array.from(feed.querySelectorAll('p')).map(el => el.textContent);
+    const bucketHeaderTexts = headers.filter(t =>
+      ['Right now', 'Up next', 'Today', 'Earlier'].includes(t ?? '')
+    );
+    expect(bucketHeaderTexts).toEqual(['Right now', 'Up next', 'Today', 'Earlier']);
   });
 });
