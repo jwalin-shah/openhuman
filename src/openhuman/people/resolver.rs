@@ -35,7 +35,10 @@ impl<'a> HandleResolver<'a> {
     /// Look up or mint. Display-name / email fields on the newly-minted
     /// `Person` are populated from the handle itself so the UI has
     /// something to render before any enrichment runs.
-    pub async fn resolve_or_create(&self, handle: &Handle) -> Result<PersonId, String> {
+    ///
+    /// Returns `(PersonId, was_created)`. `was_created` is `true` iff a new
+    /// row was inserted on this call; `false` when an existing row was found.
+    pub async fn resolve_or_create(&self, handle: &Handle) -> Result<(PersonId, bool), String> {
         let canonical = handle.canonicalize();
         if let Some(id) = self
             .store
@@ -43,7 +46,7 @@ impl<'a> HandleResolver<'a> {
             .await
             .map_err(|e| format!("lookup: {e}"))?
         {
-            return Ok(id);
+            return Ok((id, false));
         }
         let id = PersonId::new();
         let (display_name, primary_email, primary_phone) = match &canonical {
@@ -71,14 +74,14 @@ impl<'a> HandleResolver<'a> {
             .insert_person(&person, &[canonical])
             .await
             .map_err(|e| format!("insert_person: {e}"))?;
-        Ok(id)
+        Ok((id, true))
     }
 
     /// Merge: attach `other` as an alias on the person `primary` resolves to.
     /// Useful for the sync path that learns "this email and this phone
     /// belong to the same contact".
     pub async fn link(&self, primary: &Handle, other: Handle) -> Result<PersonId, String> {
-        let pid = self.resolve_or_create(primary).await?;
+        let (pid, _) = self.resolve_or_create(primary).await?;
         self.store
             .add_alias(pid, other)
             .await
@@ -150,7 +153,7 @@ impl<'a> HandleResolver<'a> {
                     skipped += 1;
                     continue;
                 }
-                Ok(pid) => {
+                Ok((pid, _)) => {
                     // link all additional handles as aliases
                     for alias in handles.into_iter().skip(1) {
                         if let Err(e) = self.store.add_alias(pid, alias.canonicalize()).await {
@@ -189,25 +192,28 @@ mod tests {
     async fn resolve_or_create_is_deterministic_across_case_and_whitespace() {
         let s = PeopleStore::open_in_memory().unwrap();
         let r = HandleResolver::new(&s);
-        let a = r
+        let (a, created_a) = r
             .resolve_or_create(&Handle::Email("Sarah@Example.COM".into()))
             .await
             .unwrap();
-        let b = r
+        let (b, created_b) = r
             .resolve_or_create(&Handle::Email("  sarah@example.com ".into()))
             .await
             .unwrap();
         assert_eq!(a, b, "canonicalization must collapse case+whitespace");
+        assert!(created_a, "first call must create");
+        assert!(!created_b, "second call must be a lookup hit");
     }
 
     #[tokio::test]
     async fn same_email_different_display_name_resolve_same_id() {
         let s = PeopleStore::open_in_memory().unwrap();
         let r = HandleResolver::new(&s);
-        let via_email = r
+        let (via_email, created) = r
             .resolve_or_create(&Handle::Email("a@b.c".into()))
             .await
             .unwrap();
+        assert!(created, "first resolve_or_create must create");
         // Linking a display name to the same email must not mint a second id.
         let via_linked = r
             .link(
@@ -229,11 +235,11 @@ mod tests {
     async fn distinct_handles_without_linking_produce_distinct_ids() {
         let s = PeopleStore::open_in_memory().unwrap();
         let r = HandleResolver::new(&s);
-        let a = r
+        let (a, _) = r
             .resolve_or_create(&Handle::Email("a@b.c".into()))
             .await
             .unwrap();
-        let b = r
+        let (b, _) = r
             .resolve_or_create(&Handle::Email("x@y.z".into()))
             .await
             .unwrap();

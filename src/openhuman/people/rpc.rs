@@ -65,15 +65,16 @@ pub async fn handle_resolve(
     create_if_missing: bool,
 ) -> Result<RpcOutcome<Value>, String> {
     let resolver = HandleResolver::new(store);
-    let result = if create_if_missing {
-        Some(resolver.resolve_or_create(&handle).await?)
+    let (result, created) = if create_if_missing {
+        let (pid, was_created) = resolver.resolve_or_create(&handle).await?;
+        (Some(pid), was_created)
     } else {
-        resolver.resolve(&handle).await?
+        (resolver.resolve(&handle).await?, false)
     };
     Ok(RpcOutcome::new(
         json!({
             "person_id": result.map(|p| p.to_string()),
-            "created": create_if_missing && result.is_some(),
+            "created": created,
         }),
         vec![],
     ))
