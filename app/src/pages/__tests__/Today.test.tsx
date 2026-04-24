@@ -1,7 +1,11 @@
+import { combineReducers, configureStore } from '@reduxjs/toolkit';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import chatRuntimeReducer from '../../store/chatRuntimeSlice';
+import threadReducer from '../../store/threadSlice';
 import Today, { type TodayFeedItem, type TodayFeedListResponse } from '../Today';
 
 // ─── Mock coreRpcClient ───────────────────────────────────────────────────────
@@ -9,6 +13,62 @@ import Today, { type TodayFeedItem, type TodayFeedListResponse } from '../Today'
 const { callCoreRpc } = vi.hoisted(() => ({ callCoreRpc: vi.fn() }));
 
 vi.mock('../../services/coreRpcClient', () => ({ callCoreRpc }));
+
+// ─── Mock chatService ─────────────────────────────────────────────────────────
+
+const { chatSend, chatCancel } = vi.hoisted(() => ({
+  chatSend: vi.fn().mockResolvedValue(undefined),
+  chatCancel: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock('../../services/chatService', () => ({
+  chatSend,
+  chatCancel,
+  useRustChat: vi.fn(() => true),
+}));
+
+// ─── Mock threadApi ───────────────────────────────────────────────────────────
+
+const { createNewThread } = vi.hoisted(() => ({
+  createNewThread: vi.fn().mockResolvedValue({ id: 'thread-today-1', title: 'Today' }),
+}));
+
+vi.mock('../../services/api/threadApi', () => ({
+  threadApi: {
+    createNewThread,
+    getThreads: vi.fn().mockResolvedValue({ threads: [], count: 0 }),
+    getThreadMessages: vi.fn().mockResolvedValue({ messages: [] }),
+    appendMessage: vi.fn().mockImplementation(async (_tid, msg) => msg),
+    generateTitleIfNeeded: vi.fn().mockResolvedValue({ id: 'thread-today-1', title: 'Today' }),
+    updateMessage: vi.fn(),
+    deleteThread: vi.fn(),
+    purge: vi.fn(),
+  },
+}));
+
+// ─── Redux test store ─────────────────────────────────────────────────────────
+
+function createTodayTestStore() {
+  return configureStore({
+    reducer: combineReducers({ thread: threadReducer, chatRuntime: chatRuntimeReducer }),
+  });
+}
+
+// ─── Render helper ────────────────────────────────────────────────────────────
+
+function renderToday() {
+  const store = createTodayTestStore();
+  return {
+    store,
+    ...render(
+      <Provider store={store}>
+        <MemoryRouter>
+          <Today />
+        </MemoryRouter>
+      </Provider>
+    ),
+  };
+}
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -38,20 +98,14 @@ function makeResponse(items: TodayFeedItem[]): TodayFeedListResponse {
   };
 }
 
-function renderToday() {
-  return render(
-    <MemoryRouter>
-      <Today />
-    </MemoryRouter>
-  );
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('Today page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  // ── Original 5 tests (preserved) ────────────────────────────────────────────
 
   it('shows skeleton rows while loading', () => {
     // Never resolves during the test
@@ -166,5 +220,138 @@ describe('Today page', () => {
 
     expect(screen.queryByTestId('today-error')).not.toBeInTheDocument();
     expect(callCoreRpc).toHaveBeenCalledTimes(2);
+  });
+
+  // ── New tests for agentic features ───────────────────────────────────────────
+
+  it('renders composer bar with placeholder text', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    const input = screen.getByTestId('today-composer-input');
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveAttribute('placeholder', 'What do you want to do today?');
+  });
+
+  it('calls agent flow when Enter is pressed on the composer', async () => {
+    callCoreRpc.mockResolvedValueOnce(makeResponse([]));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-composer-input')).toBeInTheDocument();
+    });
+
+    const input = screen.getByTestId('today-composer-input');
+    fireEvent.change(input, { target: { value: 'Summarize my day' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => {
+      expect(createNewThread).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: 'thread-today-1', model: 'reasoning-v1' })
+      );
+    });
+  });
+
+  it('renders action buttons in the DOM for each feed row', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'g1', source: 'gmail', title: 'Email from Alice' }),
+      makeItem({ id: 'c1', source: 'calendar', title: 'Standup' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Gmail primary action is "Reply"
+    expect(screen.getByTestId('action-reply-g1')).toBeInTheDocument();
+    // Calendar primary action is "Summarize"
+    expect(screen.getByTestId('action-summarize-c1')).toBeInTheDocument();
+  });
+
+  it('triggers agent flow when a row action button is clicked', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'g1', source: 'gmail', title: 'Email from Alice', sender: 'alice@test.com' }),
+    ];
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-reply-g1')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('action-reply-g1'));
+
+    await waitFor(() => {
+      expect(createNewThread).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(chatSend).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: 'thread-today-1', model: 'reasoning-v1' })
+      );
+    });
+  });
+
+  it('opens drawer with loading state when agent is running', async () => {
+    // chatSend never resolves — keeps thread in-flight
+    chatSend.mockReturnValue(new Promise(() => {}));
+    callCoreRpc.mockResolvedValueOnce(
+      makeResponse([makeItem({ id: 'g1', source: 'gmail', title: 'Email' })])
+    );
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-reply-g1')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('action-reply-g1'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-agent-drawer')).toBeInTheDocument();
+    });
+
+    // Drawer should be visible (translate-x-0 class present, not translate-x-full)
+    const drawer = screen.getByTestId('today-agent-drawer');
+    expect(drawer.className).toContain('translate-x-0');
+  });
+
+  it('closes the drawer when Escape is pressed', async () => {
+    chatSend.mockReturnValue(new Promise(() => {}));
+    callCoreRpc.mockResolvedValueOnce(
+      makeResponse([makeItem({ id: 'g1', source: 'gmail', title: 'Email' })])
+    );
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-reply-g1')).toBeInTheDocument();
+    });
+
+    // Open the drawer
+    fireEvent.click(screen.getByTestId('action-reply-g1'));
+
+    await waitFor(() => {
+      const drawer = screen.getByTestId('today-agent-drawer');
+      expect(drawer.className).toContain('translate-x-0');
+    });
+
+    // Press Escape
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => {
+      const drawer = screen.getByTestId('today-agent-drawer');
+      expect(drawer.className).toContain('translate-x-full');
+    });
   });
 });

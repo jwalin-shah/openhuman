@@ -2,37 +2,25 @@ import debug from 'debug';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { callCoreRpc } from '../services/coreRpcClient';
+import { useAppSelector } from '../store/hooks';
+import { TodayAgentDrawer } from './today/TodayAgentDrawer';
+import type {
+  TodayFeedItem,
+  TodayFeedListParams,
+  TodayFeedListResponse,
+} from './today/todayAgentUtils';
+import TodayComposerBar from './today/TodayComposerBar';
+import { TodayFeedRow } from './today/TodayFeedRow';
+import { useTodayAgent } from './today/useTodayAgent';
 
-// ─── Shared RPC contract types ───────────────────────────────────────────────
+// ─── Re-export types for backward compatibility (tests import from '../Today')
 
-export type TodaySource = 'imessage' | 'gmail' | 'calendar';
-
-export interface TodayFeedItem {
-  id: string;
-  source: TodaySource;
-  title: string;
-  preview: string;
-  timestamp_ms: number;
-  sender?: string | null;
-  avatar_url?: string | null;
-  is_unread: boolean;
-  source_id: string;
-  action_hint: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface TodayFeedListParams {
-  window_hours?: number;
-  limit_per_source?: number;
-  source_filter?: string;
-}
-
-export interface TodayFeedListResponse {
-  items: TodayFeedItem[];
-  source_counts: Record<string, number>;
-  window_hours: number;
-  generated_at_ms: number;
-}
+export type {
+  TodaySource,
+  TodayFeedItem,
+  TodayFeedListParams,
+  TodayFeedListResponse,
+} from './today/todayAgentUtils';
 
 // ─── Debug logger ────────────────────────────────────────────────────────────
 
@@ -60,7 +48,6 @@ function formatRelativeTime(timestampMs: number): string {
   const deltaHr = Math.floor(deltaMs / 3_600_000);
 
   if (deltaMs < 0) {
-    // Future event (calendar)
     const futureSec = Math.abs(deltaSec);
     const futureMin = Math.abs(deltaMin);
     const futureHr = Math.abs(deltaHr);
@@ -75,20 +62,6 @@ function formatRelativeTime(timestampMs: number): string {
   if (deltaHr < 24) return `${deltaHr}h ago`;
   return `${Math.floor(deltaHr / 24)}d ago`;
 }
-
-// ─── Source badge ────────────────────────────────────────────────────────────
-
-const SOURCE_BADGE_CLASSES: Record<TodaySource, string> = {
-  imessage: 'bg-primary-100 text-primary-700',
-  gmail: 'bg-coral-100 text-coral-700',
-  calendar: 'bg-sage-100 text-sage-700',
-};
-
-const SOURCE_LABELS: Record<TodaySource, string> = {
-  imessage: 'iMessage',
-  gmail: 'Gmail',
-  calendar: 'Calendar',
-};
 
 // ─── Skeleton row ────────────────────────────────────────────────────────────
 
@@ -106,52 +79,7 @@ function SkeletonRow() {
   );
 }
 
-// ─── Feed row ────────────────────────────────────────────────────────────────
-
-interface FeedRowProps {
-  item: TodayFeedItem;
-}
-
-function FeedRow({ item }: FeedRowProps) {
-  const badgeClasses = SOURCE_BADGE_CLASSES[item.source] ?? 'bg-stone-100 text-stone-500';
-  const sourceLabel = SOURCE_LABELS[item.source] ?? item.source;
-  const relTime = formatRelativeTime(item.timestamp_ms);
-
-  return (
-    <li className="px-4 py-3 hover:bg-stone-50 transition-colors">
-      <div className="flex items-start gap-3">
-        {/* Source badge */}
-        <span
-          className={`mt-0.5 shrink-0 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClasses}`}
-          data-source={item.source}>
-          {sourceLabel}
-        </span>
-
-        {/* Content */}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            {item.is_unread && (
-              <span
-                className="inline-block w-2 h-2 rounded-full bg-primary-500 shrink-0"
-                aria-label="unread"
-              />
-            )}
-            <p className="text-sm font-semibold text-stone-900 truncate">{item.title}</p>
-          </div>
-          {item.sender && <p className="text-xs text-stone-500 truncate">From: {item.sender}</p>}
-          <p className="mt-0.5 text-sm text-stone-600 line-clamp-2">{item.preview}</p>
-        </div>
-
-        {/* Timestamp */}
-        <span className="shrink-0 text-[11px] text-stone-400 whitespace-nowrap">{relTime}</span>
-      </div>
-    </li>
-  );
-}
-
 // ─── Data hook ───────────────────────────────────────────────────────────────
-// Accepts primitive filter value to avoid unstable object references that
-// would cause useEffect to re-fire on every render.
 
 interface UseTodayFeedState {
   data: TodayFeedListResponse | null;
@@ -198,7 +126,6 @@ function useTodayFeed(sourceFilter: string | undefined): UseTodayFeedState {
     log('hook mounted / params changed', { sourceFilter, refetchTick });
     void fetchFeed();
 
-    // Auto-refresh every 2 minutes
     const interval = setInterval(() => {
       log('auto-refresh interval fired');
       void fetchFeed();
@@ -222,18 +149,30 @@ const Today = () => {
 
   const { data, isLoading, error, refetch } = useTodayFeed(sourceFilter);
 
+  // Agent hook
+  const agent = useTodayAgent();
+
+  // Read global activeThreadId from Redux to disable UI while agent is running
+  const globalActiveThreadId = useAppSelector(state => state.thread.activeThreadId);
+  const agentBusy = Boolean(globalActiveThreadId);
+
+  const items: TodayFeedItem[] = data?.items ?? [];
+  const isEmpty = !isLoading && !error && items.length === 0;
+
   const handleFilterChange = (tab: FilterTab) => {
     log('filter changed', { from: activeFilter, to: tab });
     setActiveFilter(tab);
   };
 
-  const items = data?.items ?? [];
-  const isEmpty = !isLoading && !error && items.length === 0;
+  const handleComposerSubmit = (instruction: string) => {
+    log('composer submit instruction_len=%d item_count=%d', instruction.length, items.length);
+    void agent.sendComposer(instruction, items);
+  };
 
-  log('render', { isLoading, hasError: !!error, itemCount: items.length, activeFilter });
+  log('render', { isLoading, hasError: !!error, itemCount: items.length, activeFilter, agentBusy });
 
   return (
-    <div className="p-4 pt-6">
+    <div className="p-4 pt-6 relative">
       <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-soft border border-stone-200 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-stone-100 px-4 py-3">
@@ -246,6 +185,9 @@ const Today = () => {
             </p>
           </div>
         </div>
+
+        {/* Composer bar */}
+        <TodayComposerBar onSubmit={handleComposerSubmit} disabled={agentBusy} />
 
         {/* Source filter tabs */}
         <div className="flex gap-1 border-b border-stone-100 px-4 py-2">
@@ -303,11 +245,27 @@ const Today = () => {
         {!isLoading && !error && items.length > 0 && (
           <ul className="divide-y divide-stone-100" data-testid="today-feed">
             {items.map(item => (
-              <FeedRow key={item.id} item={item} />
+              <TodayFeedRow
+                key={item.id}
+                item={item}
+                onAction={(action, feedItem) => {
+                  void agent.sendAction(action, feedItem);
+                }}
+              />
             ))}
           </ul>
         )}
       </div>
+
+      {/* Agent drawer — sibling to the feed card, positioned fixed */}
+      <TodayAgentDrawer
+        isOpen={agent.isOpen}
+        onClose={agent.close}
+        onRetry={agent.error ? agent.close : undefined}
+        threadId={agent.activeThreadId}
+        contextLabel={agent.contextLabel}
+        actionKind={agent.actionKind}
+      />
     </div>
   );
 };
