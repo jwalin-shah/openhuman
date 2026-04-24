@@ -14,6 +14,8 @@ import {
   type TodayFeedItem,
   type TodaySource,
 } from './todayAgentUtils';
+import { TodayLinkedPill } from './TodayLinkedPill';
+import { type TodayFeedCluster } from './useTodayLinks';
 
 const log = debug('[today-ui]');
 
@@ -137,10 +139,12 @@ export interface TodayFeedRowProps {
   onAction(action: TodayActionKind, item: TodayFeedItem): void;
   /** When true, renders a keyboard-navigation focus ring on the row. */
   isFocused?: boolean;
+  /** Optional semantic cluster this row belongs to — renders a Linked pill. */
+  cluster?: TodayFeedCluster;
 }
 
 export const TodayFeedRow = forwardRef<HTMLLIElement, TodayFeedRowProps>(
-  ({ item, onAction, isFocused = false }, ref) => {
+  ({ item, onAction, isFocused = false, cluster }, ref) => {
     const badgeClasses = SOURCE_BADGE_CLASSES[item.source] ?? 'bg-stone-100 text-stone-500';
     const sourceLabel = SOURCE_LABELS[item.source] ?? item.source;
     const relTime = formatRelativeTime(item.timestamp_ms);
@@ -172,8 +176,11 @@ export const TodayFeedRow = forwardRef<HTMLLIElement, TodayFeedRowProps>(
             <p className="mt-0.5 text-sm text-stone-600 line-clamp-2">{item.preview}</p>
           </div>
 
-          {/* Timestamp */}
-          <span className="shrink-0 text-[11px] text-stone-400 whitespace-nowrap">{relTime}</span>
+          {/* Timestamp + optional Linked pill */}
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <span className="text-[11px] text-stone-400 whitespace-nowrap">{relTime}</span>
+            {cluster && <TodayLinkedPill cluster={cluster} />}
+          </div>
 
           {/* Hover action area */}
           <ActionMenu item={item} onAction={onAction} />

@@ -15,6 +15,18 @@ const { callCoreRpc } = vi.hoisted(() => ({ callCoreRpc: vi.fn() }));
 
 vi.mock('../../services/coreRpcClient', () => ({ callCoreRpc }));
 
+// ─── Mock useTodayLinks ───────────────────────────────────────────────────────
+// Mock the entire hook so callCoreRpc call counts in existing tests stay stable.
+// Today.test.tsx tests Today.tsx integration — useTodayLinks internals are
+// covered in __tests__/useTodayLinks.test.ts.
+// Two new tests override this mock to verify Linked pill rendering.
+
+const { useTodayLinks } = vi.hoisted(() => ({
+  useTodayLinks: vi.fn().mockReturnValue({ clusters: [], isLoading: false }),
+}));
+
+vi.mock('../today/useTodayLinks', () => ({ useTodayLinks }));
+
 // ─── Mock chatService ─────────────────────────────────────────────────────────
 
 const { chatSend, chatCancel } = vi.hoisted(() => ({
@@ -113,6 +125,8 @@ if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoVie
 describe('Today page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset useTodayLinks to the default no-op so existing tests are unaffected.
+    useTodayLinks.mockReturnValue({ clusters: [], isLoading: false });
   });
 
   // ── Original 5 tests (preserved) ────────────────────────────────────────────
@@ -768,5 +782,53 @@ describe('Today page', () => {
       ['Right now', 'Up next', 'Today', 'Earlier'].includes(t ?? '')
     );
     expect(bucketHeaderTexts).toEqual(['Right now', 'Up next', 'Today', 'Earlier']);
+  });
+
+  // ── Cross-source Linked pill tests ─────────────────────────────────────────
+
+  it('does not render Linked pill on rows without a cluster', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'no-cluster-1', source: 'gmail', title: 'Standalone email' }),
+    ];
+    // useTodayLinks already returns empty clusters (set in beforeEach).
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('today-linked-pill')).not.toBeInTheDocument();
+  });
+
+  it('renders Linked pill on a row whose item id is in a cluster', async () => {
+    const items: TodayFeedItem[] = [
+      makeItem({ id: 'linked-a', source: 'imessage', title: 'Sarah Chen' }),
+      makeItem({ id: 'linked-b', source: 'calendar', title: 'Design review' }),
+    ];
+
+    // Override useTodayLinks to return a cluster linking both items.
+    useTodayLinks.mockReturnValue({
+      clusters: [
+        {
+          cluster_id: 'test-cluster-1',
+          item_ids: ['linked-a', 'linked-b'],
+          reason: "Sarah's text references the design review",
+        },
+      ],
+      isLoading: false,
+    });
+    callCoreRpc.mockResolvedValueOnce(makeResponse(items));
+
+    renderToday();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('today-feed')).toBeInTheDocument();
+    });
+
+    // Both items are in the cluster so both rows should have a Linked pill.
+    const pills = screen.getAllByTestId('today-linked-pill');
+    expect(pills.length).toBe(2);
   });
 });

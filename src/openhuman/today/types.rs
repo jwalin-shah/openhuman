@@ -60,3 +60,33 @@ pub struct TodayFeedListResponse {
     pub window_hours: u64,
     pub generated_at_ms: u64,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// today_feed_links types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Request parameters for `openhuman.today_feed_links`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TodayFeedLinksParams {
+    pub item_ids: Vec<String>,
+    pub items: Vec<TodayFeedItem>,
+}
+
+/// A single cluster of semantically-related feed items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodayFeedCluster {
+    /// Deterministic identifier derived from sorted member IDs (SHA-256 hex).
+    pub cluster_id: String,
+    /// IDs of items that belong to this cluster.
+    pub item_ids: Vec<String>,
+    /// Short human-readable reason explaining why these items are linked.
+    pub reason: String,
+}
+
+/// Response envelope for `openhuman.today_feed_links`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TodayFeedLinksResponse {
+    pub clusters: Vec<TodayFeedCluster>,
+    /// `true` when the response was served from the in-process cache.
+    pub from_cache: bool,
+}

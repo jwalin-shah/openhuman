@@ -17,6 +17,7 @@ import { TodayMorningBrief } from './today/TodayMorningBrief';
 import { TodaySampleBanner, TodaySourceNudge } from './today/TodaySampleBanner';
 import { DEMO_ITEM_IDS, getSampleItems } from './today/todaySampleData';
 import { useTodayAgent } from './today/useTodayAgent';
+import { type TodayFeedCluster, useTodayLinks } from './today/useTodayLinks';
 
 // ─── Re-export types for backward compatibility (tests import from '../Today')
 
@@ -212,6 +213,21 @@ const Today = () => {
 
   // Displayed items: real feed or sample feed
   const items: TodayFeedItem[] = isSampleMode ? sampleItems : realItems;
+
+  // Cross-source semantic clusters — progressive enhancement; feed renders
+  // instantly and pills fade in when clusters arrive (1-3 s typically).
+  const { clusters } = useTodayLinks(items);
+
+  // Map from item ID to its cluster, used to pass cluster prop to each row.
+  const clusterMap = useMemo<Map<string, TodayFeedCluster>>(() => {
+    const map = new Map<string, TodayFeedCluster>();
+    for (const cluster of clusters) {
+      for (const id of cluster.item_ids) {
+        map.set(id, cluster);
+      }
+    }
+    return map;
+  }, [clusters]);
 
   // Per-filter source nudge: shown in sample mode when a specific tab is
   // active but that source has no items (edge case for the filtered view).
@@ -446,6 +462,7 @@ const Today = () => {
                             }}
                             item={item}
                             isFocused={focusedIndex === idx}
+                            cluster={clusterMap.get(item.id)}
                             onAction={(action, feedItem) => {
                               log(
                                 '[today-ui] row action action=%s item_id=%s is_demo=%s',

@@ -2365,3 +2365,69 @@ async fn json_rpc_today_feed_list_returns_stable_shape() {
     mock_join.abort();
     rpc_join.abort();
 }
+
+#[tokio::test]
+async fn json_rpc_today_feed_links_returns_empty_when_no_model() {
+    let _env_lock = json_rpc_e2e_env_lock();
+    let tmp = tempdir().expect("tempdir");
+    let home = tmp.path();
+    let openhuman_home = home.join(".openhuman");
+
+    let _home_guard = EnvVarGuard::set_to_path("HOME", home);
+    let _workspace_guard = EnvVarGuard::unset("OPENHUMAN_WORKSPACE");
+    let _backend_url_guard = EnvVarGuard::unset("BACKEND_URL");
+    let _vite_backend_guard = EnvVarGuard::unset("VITE_BACKEND_URL");
+
+    let (mock_addr, mock_join) = serve_on_ephemeral(mock_upstream_router()).await;
+    let mock_origin = format!("http://{}", mock_addr);
+    write_min_config(&openhuman_home, &mock_origin);
+
+    let (rpc_addr, rpc_join) = serve_on_ephemeral(build_core_http_router(false)).await;
+    let rpc_base = format!("http://{}", rpc_addr);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // In the test environment the local model is not running, so the "not ready"
+    // path fires and returns empty clusters — the expected shape.
+    let resp = post_json_rpc(
+        &rpc_base,
+        6000,
+        "openhuman.today_feed_links",
+        json!({
+            "item_ids": ["imessage::1"],
+            "items": [{
+                "id": "imessage::1",
+                "source": "imessage",
+                "title": "Sarah Chen",
+                "preview": "Still on for 3?",
+                "timestamp_ms": 1714000000000u64,
+                "is_unread": true,
+                "source_id": "imessage::1",
+                "action_hint": "reply"
+            }]
+        }),
+    )
+    .await;
+
+    let result = assert_no_jsonrpc_error(&resp, "today_feed_links");
+    let body = result.get("result").unwrap_or(result);
+
+    // clusters must be an empty array (model not running in CI)
+    assert_eq!(
+        body.get("clusters")
+            .and_then(Value::as_array)
+            .map(|a| a.len()),
+        Some(0),
+        "expected empty clusters array: {body}"
+    );
+
+    // from_cache must be false (nothing was cached)
+    assert_eq!(
+        body.get("from_cache").and_then(Value::as_bool),
+        Some(false),
+        "expected from_cache=false: {body}"
+    );
+
+    mock_join.abort();
+    rpc_join.abort();
+}
