@@ -2277,3 +2277,91 @@ async fn notification_settings_roundtrip_and_disabled_ingest_skip() {
     mock_join.abort();
     rpc_join.abort();
 }
+
+#[tokio::test]
+async fn json_rpc_today_feed_list_returns_stable_shape() {
+    let _env_lock = json_rpc_e2e_env_lock();
+    let tmp = tempdir().expect("tempdir");
+    let home = tmp.path();
+    let openhuman_home = home.join(".openhuman");
+
+    let _home_guard = EnvVarGuard::set_to_path("HOME", home);
+    let _workspace_guard = EnvVarGuard::unset("OPENHUMAN_WORKSPACE");
+    let _backend_url_guard = EnvVarGuard::unset("BACKEND_URL");
+    let _vite_backend_guard = EnvVarGuard::unset("VITE_BACKEND_URL");
+
+    let (mock_addr, mock_join) = serve_on_ephemeral(mock_upstream_router()).await;
+    let mock_origin = format!("http://{}", mock_addr);
+    write_min_config(&openhuman_home, &mock_origin);
+
+    let (rpc_addr, rpc_join) = serve_on_ephemeral(build_core_http_router(false)).await;
+    let rpc_base = format!("http://{}", rpc_addr);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // today_feed_list with default params — items will be empty in CI (no db / no memory client).
+    let resp = post_json_rpc(&rpc_base, 5000, "openhuman.today_feed_list", json!({})).await;
+    let result = assert_no_jsonrpc_error(&resp, "today_feed_list");
+    // Some controllers return {result: {...}}; unwrap one level if needed.
+    let body = result.get("result").unwrap_or(result);
+
+    // items must be an array (empty is fine).
+    assert!(
+        body.get("items").and_then(Value::as_array).is_some(),
+        "expected items array: {body}"
+    );
+
+    // source_counts must be an object.
+    assert!(
+        body.get("source_counts")
+            .and_then(Value::as_object)
+            .is_some(),
+        "expected source_counts object: {body}"
+    );
+
+    // window_hours must equal 24 (the default).
+    assert_eq!(
+        body.get("window_hours").and_then(Value::as_u64),
+        Some(24),
+        "expected window_hours=24: {body}"
+    );
+
+    // generated_at_ms must be a positive u64.
+    let gen_at = body
+        .get("generated_at_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(gen_at > 0, "expected generated_at_ms > 0: {body}");
+
+    // today_feed_list with explicit window_hours and source_filter.
+    let resp2 = post_json_rpc(
+        &rpc_base,
+        5001,
+        "openhuman.today_feed_list",
+        json!({
+            "window_hours": 48,
+            "limit_per_source": 5,
+            "source_filter": "gmail"
+        }),
+    )
+    .await;
+    let result2 = assert_no_jsonrpc_error(&resp2, "today_feed_list custom params");
+    let body2 = result2.get("result").unwrap_or(result2);
+
+    assert_eq!(
+        body2.get("window_hours").and_then(Value::as_u64),
+        Some(48),
+        "expected window_hours=48: {body2}"
+    );
+    // All returned items (if any) must be from the gmail source.
+    if let Some(items) = body2.get("items").and_then(Value::as_array) {
+        for item in items {
+            if let Some(src) = item.get("source").and_then(Value::as_str) {
+                assert_eq!(src, "gmail", "unexpected source in filtered result: {item}");
+            }
+        }
+    }
+
+    mock_join.abort();
+    rpc_join.abort();
+}

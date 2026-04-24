@@ -42,6 +42,7 @@ pub mod user_scopes;
 pub mod catalogs;
 pub mod github;
 pub mod gmail;
+pub mod google_calendar;
 pub mod notion;
 pub mod profile;
 pub mod registry;
