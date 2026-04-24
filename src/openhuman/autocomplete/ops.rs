@@ -396,6 +396,17 @@ mod tests {
     use super::*;
 
     // ── autocomplete_status ────────────────────────────────────────────────────
+    //
+    // TODO: These tests share the process-global autocomplete::global_engine()
+    // singleton (via autocomplete_status / autocomplete_stop / autocomplete_start).
+    // They are currently stable because start() always errors on non-macOS, keeping
+    // the engine in an idle state. Once macOS support lands -- or if concurrent tests
+    // transition the engine -- races on the global state will cause flakiness.
+    //
+    // Fix when that happens: serialize engine-touching tests with a
+    // process-wide tokio::sync::Mutex guard (or the `serial_test` crate), or
+    // refactor to accept an injected engine instance instead of going through
+    // global_engine().
 
     /// Happy path: `autocomplete_status` always succeeds and produces exactly
     /// two log lines with the expected key tokens.
@@ -584,11 +595,18 @@ mod tests {
     }
 
     // ── autocomplete_history (integration) ───────────────────────────────────
+    //
+    // NOTE: These tests operate against the real on-disk KV store via
+    // MemoryClient::new_local() (resolves to default_root_openhuman_dir()).
+    // They are marked #[ignore] to prevent wiping a contributor's autocomplete
+    // history on every `cargo test` run and to avoid non-deterministic results.
+    // Run explicitly with: cargo test -- --ignored
 
     /// `autocomplete_history` against a fresh (possibly empty) local KV store
     /// must succeed and produce exactly two log lines — one confirmation and
     /// one structured log.  The result entries count may be 0 or more.
     #[tokio::test]
+    #[ignore = "operates on real on-disk KV store; run with --ignored to opt in"]
     async fn history_returns_outcome_with_two_log_lines() {
         let payload = AutocompleteHistoryParams { limit: Some(5) };
         let outcome = autocomplete_history(payload)
@@ -617,6 +635,7 @@ mod tests {
 
     /// When `limit` is `None`, the default of 20 is applied and appears in the log.
     #[tokio::test]
+    #[ignore = "operates on real on-disk KV store; run with --ignored to opt in"]
     async fn history_default_limit_appears_in_log() {
         let payload = AutocompleteHistoryParams { limit: None };
         let outcome = autocomplete_history(payload)
@@ -635,6 +654,7 @@ mod tests {
     /// `autocomplete_clear_history` on an already-empty or populated store must
     /// succeed, return a non-negative cleared count, and emit exactly two log lines.
     #[tokio::test]
+    #[ignore = "operates on real on-disk KV store; run with --ignored to opt in"]
     async fn clear_history_returns_outcome_with_two_log_lines() {
         let outcome = autocomplete_clear_history()
             .await

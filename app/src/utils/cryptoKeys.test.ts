@@ -83,12 +83,10 @@ describe('deriveAesKeyFromMnemonic', () => {
   });
 
   it('returns a fixed known value for the all-abandon mnemonic', () => {
-    // Pin the output so any accidental change to salt / KDF params is caught.
+    // Pinned output for salt='openhuman-aes-key-v1', PBKDF2-SHA256, c=100000, dkLen=32.
+    // If this assertion fails, the KDF parameters or salt have changed — update intentionally.
     const key = deriveAesKeyFromMnemonic(KNOWN_MNEMONIC);
-    // Key must be 32 bytes (64 hex chars) and consistent across runs.
-    expect(key).toHaveLength(64);
-    // Store the actual value once on first run; subsequent runs must match.
-    expect(key).toBe(deriveAesKeyFromMnemonic(KNOWN_MNEMONIC));
+    expect(key).toBe('dce707ee483afb0a70cb2e076295f9f914e0c62cc097895eabda1c0c1f2f0cb1');
   });
 });
 
@@ -106,8 +104,9 @@ describe('deriveEvmAddressFromMnemonic', () => {
 
   it('returns the well-known address for the all-abandon mnemonic', () => {
     // MetaMask / BIP44 m/44'/60'/0'/0/0 for all-abandon is a stable known address.
+    // Pinned in EIP-55 checksummed form — validates both identity and checksum casing.
     const address = deriveEvmAddressFromMnemonic(KNOWN_MNEMONIC);
-    expect(address.toLowerCase()).toBe('0x9858effd232b4033e47d90003d41ec34ecaeda94');
+    expect(address).toBe('0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
   });
 
   it('returns a different address for a different mnemonic', () => {
