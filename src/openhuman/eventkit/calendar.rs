@@ -149,10 +149,9 @@ mod imp {
                 let ical_uid = match ek_event.calendarItemExternalIdentifier() {
                     Some(s) => s.to_string(),
                     None => {
-                        log::info!(
+                        log::debug!(
                             "[eventkit] skipping event without external identifier \
-                             (title={:?}) — iCloud may not have synced yet",
-                            ek_event.title().to_string()
+                             — iCloud may not have synced yet"
                         );
                         continue;
                     }
@@ -174,7 +173,9 @@ mod imp {
                     }
                     Ok(false) => {}
                     Err(e) => {
-                        log::warn!("[eventkit] store::is_known error: {e}");
+                        return Err(format!(
+                            "cache lookup failed for calendar event: {e}"
+                        ));
                     }
                 }
 
@@ -210,10 +211,11 @@ mod imp {
                     fetched_at: now_ts,
                 };
 
-                // Write to local cache before appending.
-                if let Err(e) = store::upsert_event(conn, &ev) {
-                    log::warn!("[eventkit] cache upsert failed for {}: {e}", ev.ical_uid);
-                }
+                // Write to local cache before appending; fail closed on error
+                // to prevent duplicate events on the next sync.
+                store::upsert_event(conn, &ev).map_err(|e| {
+                    format!("cache upsert failed for calendar event: {e}")
+                })?;
                 out.push(ev);
             }
 
