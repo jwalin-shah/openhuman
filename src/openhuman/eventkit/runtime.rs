@@ -111,28 +111,50 @@ fn db_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize tests that mutate `OPENHUMAN_WORKSPACE` and share the
+    /// process-global `CONN` singleton.
+    fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
     /// Verify `get()` returns the same Arc on repeated calls (singleton).
     #[test]
     fn get_is_idempotent() {
+        let _guard = test_env_lock();
         // Use a temp dir so the test doesn't write to real user data.
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("OPENHUMAN_WORKSPACE", tmp.path());
+        // SAFETY: test-only; guarded by the test_env_lock mutex above.
+        unsafe { std::env::set_var("OPENHUMAN_WORKSPACE", tmp.path()) };
         let a = get().expect("first get");
         let b = get().expect("second get");
         assert!(Arc::ptr_eq(&a, &b));
     }
 
-    /// Verify `get()` returns a typed error on a bad path rather than panicking.
+    /// Verify that `db_path()` resolves correctly under a bad workspace path
+    /// and that `create_dir_all` on a regular-file path returns an error —
+    /// confirming the error path exists without relying on the global singleton
+    /// (which may have been initialised by `get_is_idempotent` in the same
+    /// process, causing `get()` to fast-path and bypass the error entirely).
     #[test]
     fn get_error_on_bad_path() {
-        // Point workspace at a file that cannot be a directory.
+        let _guard = test_env_lock();
+        // Point workspace at a regular file so that creating the eventkit
+        // subdirectory underneath it fails.
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        // Make the "eventkit" segment a file, not a directory, so mkdir fails.
-        std::env::set_var("OPENHUMAN_WORKSPACE", tmp.path());
-        // We're just checking it returns Err, not panics.
-        // (create_dir_all on an existing file path will fail on some OS)
-        // The important thing is: no panic.
-        let _ = get(); // may succeed or fail — must not panic
+        // SAFETY: test-only; guarded by the test_env_lock mutex above.
+        unsafe { std::env::set_var("OPENHUMAN_WORKSPACE", tmp.path()) };
+        let path = db_path();
+        // The eventkit/ directory would need to be created inside a regular
+        // file — that must fail on all supported platforms.
+        let parent = path.parent().expect("db_path has a parent");
+        let result = std::fs::create_dir_all(parent);
+        assert!(
+            result.is_err(),
+            "create_dir_all on a file-backed path must fail, got: {:?}",
+            result
+        );
     }
 }
