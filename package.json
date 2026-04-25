@@ -5,7 +5,8 @@
     "app"
   ],
   "resolutions": {
-    "@tauri-apps/api": "2.10.1"
+    "@tauri-apps/api": "2.10.1",
+    "socket.io-parser": ">=4.2.6"
   },
   "scripts": {
     "build": "yarn workspace openhuman-app build",
