@@ -1,5 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { type ChatSendError, chatSendError } from '../chat/chatSendError';
@@ -674,12 +674,19 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const selectedThreadToolTimeline = selectedThreadId
     ? (toolTimelineByThread[selectedThreadId] ?? [])
     : [];
-  const visibleMessages = messages.filter(msg => !msg.extraMetadata?.hidden);
-  const hasVisibleMessages = visibleMessages.length > 0;
-  const latestVisibleMessage = visibleMessages[visibleMessages.length - 1] ?? null;
-  const latestVisibleAgentMessage = [...visibleMessages]
-    .reverse()
-    .find(msg => msg.sender === 'agent');
+
+  const { visibleMessages, hasVisibleMessages, latestVisibleMessage, latestVisibleAgentMessage } =
+    useMemo(() => {
+      // ⚡ Bolt: memoize visible messages to prevent excessive recalculations on each render
+      const visible = messages.filter(msg => !msg.extraMetadata?.hidden);
+      return {
+        visibleMessages: visible,
+        hasVisibleMessages: visible.length > 0,
+        latestVisibleMessage: visible[visible.length - 1] ?? null,
+        latestVisibleAgentMessage: [...visible].reverse().find(msg => msg.sender === 'agent'),
+      };
+    }, [messages]);
+
   const activeSubagentTimelineEntry = selectedThreadToolTimeline.find(
     entry => entry.status === 'running' && entry.name.startsWith('subagent:')
   );
