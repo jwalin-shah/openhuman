@@ -155,6 +155,8 @@ fn build_registered_controllers() -> Vec<RegisteredController> {
     );
     // Integration notification ingest, triage, and per-provider settings
     controllers.extend(crate::openhuman::notifications::all_notifications_registered_controllers());
+    // Unified daily feed aggregating iMessage, Gmail, and Calendar
+    controllers.extend(crate::openhuman::today::all_today_registered_controllers());
     controllers
 }
 
@@ -212,6 +214,8 @@ fn build_declared_controller_schemas() -> Vec<ControllerSchema> {
     );
     // Integration notification ingest, triage, and per-provider settings
     schemas.extend(crate::openhuman::notifications::all_notifications_controller_schemas());
+    // Unified daily feed aggregating iMessage, Gmail, and Calendar
+    schemas.extend(crate::openhuman::today::all_today_controller_schemas());
     schemas
 }
 
@@ -285,6 +289,7 @@ pub fn namespace_description(namespace: &str) -> Option<&'static str> {
             "Integration notification ingest, triage scoring, listing, read-state, \
              and per-provider routing settings.",
         ),
+        "today" => Some("Unified daily feed aggregating iMessage, Gmail, and Calendar."),
         _ => None,
     }
 }

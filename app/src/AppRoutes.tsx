@@ -12,6 +12,7 @@ import Notifications from './pages/Notifications';
 import Rewards from './pages/Rewards';
 import Settings from './pages/Settings';
 import Skills from './pages/Skills';
+import Today from './pages/Today';
 import Webhooks from './pages/Webhooks';
 import Welcome from './pages/Welcome';
 
@@ -29,6 +30,15 @@ const AppRoutes = () => {
       />
 
       {/* Protected routes */}
+      <Route
+        path="/today"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <Today />
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         path="/home"
         element={
