@@ -534,10 +534,10 @@ fn resolve_frontmost_window_id(app_name: Option<&str>, window_title: Option<&str
 /// matching window ID.
 #[cfg(target_os = "macos")]
 fn run_swift_window_lookup(app_name: &str, window_title: Option<&str>) -> Option<u32> {
-    // Escape single-quotes for shell embedding.
-    let escaped_app = app_name.replace('\'', "'\\''");
+    // Escape double-quotes and backslashes for Swift string interpolation.
+    let escaped_app = app_name.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_title = window_title
-        .map(|t| t.replace('\'', "'\\''"))
+        .map(|t| t.replace('\\', "\\\\").replace('"', "\\\""))
         .unwrap_or_default();
     let has_title = window_title.is_some() && !escaped_title.is_empty();
 
