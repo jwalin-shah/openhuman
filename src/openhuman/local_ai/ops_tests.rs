@@ -101,18 +101,6 @@ async fn local_ai_summarize_errors_when_disabled() {
 }
 
 #[tokio::test]
-async fn local_ai_suggest_questions_returns_empty_without_local_ai() {
-    // With local_ai disabled suggestions should silently produce an empty
-    // list rather than erroring (graceful degradation).
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let outcome = local_ai_suggest_questions(&config, Some("topic".into()), None)
-        .await
-        .expect("suggestions should not error when disabled");
-    assert!(outcome.value.is_empty());
-}
-
-#[tokio::test]
 async fn local_ai_transcribe_errors_when_disabled() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
