@@ -21,9 +21,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
 #[cfg(all(feature = "cef", target_os = "linux"))]
 use std::sync::{mpsc::sync_channel, OnceLock};
+use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
