@@ -987,8 +987,14 @@ impl Agent {
     ) -> (Vec<ToolExecutionResult>, Vec<ToolCallRecord>) {
         let mut results = Vec::with_capacity(calls.len());
         let mut records = Vec::with_capacity(calls.len());
-        for call in calls {
-            let (exec_result, record) = self.execute_tool_call(call, iteration).await;
+
+        let futures: Vec<_> = calls
+            .iter()
+            .map(|call| self.execute_tool_call(call, iteration))
+            .collect();
+        let executed = futures::future::join_all(futures).await;
+
+        for (exec_result, record) in executed {
             results.push(exec_result);
             records.push(record);
         }
