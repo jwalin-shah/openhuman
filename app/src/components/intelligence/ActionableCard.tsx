@@ -283,6 +283,7 @@ export function ActionableCard({
                 {/* Complete button */}
                 <button
                   onClick={handleComplete}
+                  aria-label="Complete"
                   className="w-6 h-6 flex items-center justify-center rounded-md text-stone-400 hover:text-sage-400 hover:bg-sage-400/10 transition-all duration-150"
                   title="Complete">
                   <svg
@@ -302,6 +303,7 @@ export function ActionableCard({
                 {/* Dismiss button */}
                 <button
                   onClick={handleDismiss}
+                  aria-label="Dismiss"
                   className="w-6 h-6 flex items-center justify-center rounded-md text-stone-400 hover:text-coral-400 hover:bg-coral-400/10 transition-all duration-150"
                   title="Dismiss">
                   <svg
@@ -323,6 +325,9 @@ export function ActionableCard({
                   <button
                     ref={snoozeButtonRef}
                     onClick={() => setShowSnoozeMenu(!showSnoozeMenu)}
+                    aria-label="Snooze"
+                    aria-expanded={showSnoozeMenu}
+                    aria-haspopup="true"
                     className="w-6 h-6 flex items-center justify-center rounded-md text-stone-400 hover:text-amber-400 hover:bg-amber-400/10 transition-all duration-150"
                     title="Snooze">
                     <svg
