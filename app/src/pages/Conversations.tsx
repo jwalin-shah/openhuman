@@ -1,5 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { type ChatSendError, chatSendError } from '../chat/chatSendError';
@@ -754,9 +754,15 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const shouldRenderTimelineBeforeLatestAgentMessage =
     selectedThreadToolTimeline.length > 0 && !isSending && Boolean(latestVisibleAgentMessage);
 
-  const sortedThreads = [...threads].sort(
-    (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
-  );
+  // ⚡ Bolt: Memoize the sorting of threads to prevent an expensive O(N log N)
+  // operation and Date parsing on every re-render. Since Conversations
+  // re-renders frequently (e.g., on typing or playback updates), this significantly
+  // reduces CPU overhead when the thread list hasn't changed.
+  const sortedThreads = useMemo(() => {
+    return [...threads].sort(
+      (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    );
+  }, [threads]);
 
   const isSidebar = variant === 'sidebar';
 
