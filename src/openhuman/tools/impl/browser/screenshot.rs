@@ -45,9 +45,10 @@ impl ScreenshotTool {
                      import -window root \"$1\"; \
                  else \
                      echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
-                 fi".into(),
-                 "--".into(),
-                 output_path.into(),
+                 fi"
+                .into(),
+                "--".into(),
+                output_path.into(),
             ])
         } else {
             None
