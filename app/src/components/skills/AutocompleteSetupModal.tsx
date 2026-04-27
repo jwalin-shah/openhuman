@@ -96,6 +96,7 @@ export default function AutocompleteSetupModal({ onClose }: Props) {
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close"
             className="w-7 h-7 rounded-lg flex items-center justify-center text-stone-400 hover:text-stone-600 hover:bg-stone-100 transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
