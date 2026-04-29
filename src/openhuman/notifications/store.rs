@@ -35,6 +35,10 @@ CREATE INDEX IF NOT EXISTS idx_integration_notifications_status
     ON integration_notifications(status);
 CREATE INDEX IF NOT EXISTS idx_integration_notifications_dedup
     ON integration_notifications(provider, account_id, title, body, received_at);
+CREATE INDEX IF NOT EXISTS idx_integration_notifications_received_at
+    ON integration_notifications(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_integration_notifications_provider_received_at
+    ON integration_notifications(provider, received_at DESC);
 
 CREATE TABLE IF NOT EXISTS notification_settings (
     provider              TEXT PRIMARY KEY,
