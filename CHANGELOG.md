@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Config (Issue #933)**: Bootstrap from config.toml RPC URL with runtime derivation
+  - Added "Configure RPC URL" option on Welcome screen for self-hosted/internal deployments
+  - Users can now set core JSON-RPC URL on login screen without build-time configuration
+  - RPC URL persisted to localStorage and restored on next launch
+  - Added "Test Connection" button to validate RPC endpoint before saving
+  - Core now exposes `openhuman.config_get_client` RPC method returning safe client fields
+  - Frontend `coreRpcClient` respects user-configured URL over build-time defaults
+  - Unit tests added for URL persistence and validation utilities
+
 - **DevOps**: Added Sentry debug symbol upload to CI/CD pipeline
   - Rust debug symbols from Tauri build are now automatically uploaded to Sentry on every main branch push
   - Creates and finalizes Sentry releases with proper version tagging (`openhuman@{version}`)
@@ -27,7 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- None
+- **Webview Accounts**: Verified loading overlay implementation (Issue #867)
+  - Webviews now display a loading spinner while CEF initializes provider pages
+  - Three independent signals trigger reveal: native `on_page_load`, CDP `Page.loadEventFired`, and 15s watchdog
+  - Webview spawns at 1x1 size (off-screen) to prevent blank coverage during load
+  - Rust backend resizes/repositions webview and emits `webview-account:load` event
+  - Frontend dispatches status='open' to hide spinner once page is painted
 
 ---
 

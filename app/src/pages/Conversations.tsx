@@ -1,10 +1,11 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { type ChatSendError, chatSendError } from '../chat/chatSendError';
 import TokenUsagePill from '../components/chat/TokenUsagePill';
 import { ConfirmationModal } from '../components/intelligence/ConfirmationModal';
+import PillTabBar from '../components/PillTabBar';
 import UpsellBanner from '../components/upsell/UpsellBanner';
 import { dismissBanner, shouldShowBanner } from '../components/upsell/upsellDismissState';
 import UsageLimitModal from '../components/upsell/UsageLimitModal';
@@ -33,6 +34,8 @@ import {
 import type { ConfirmationModal as ConfirmationModalType } from '../types/intelligence';
 import type { ThreadMessage } from '../types/thread';
 import { splitAgentMessageIntoBubbles } from '../utils/agentMessageBubbles';
+import { BILLING_DASHBOARD_URL } from '../utils/links';
+import { openUrl } from '../utils/openUrl';
 import {
   isTauri,
   notifyOverlaySttState,
@@ -78,6 +81,39 @@ interface ConversationsProps {
   variant?: 'page' | 'sidebar';
 }
 
+export function isComposerInteractionBlocked(args: {
+  activeThreadId: string | null;
+  welcomePending: boolean;
+  rustChat: boolean;
+}): boolean {
+  return !args.rustChat || Boolean(args.activeThreadId) || args.welcomePending;
+}
+
+function WelcomeThinkingTypewriter() {
+  const text = 'Your agent is thinking...';
+  const [visibleChars, setVisibleChars] = useState(0);
+
+  useEffect(() => {
+    const isComplete = visibleChars >= text.length;
+    const delayMs = isComplete ? 950 : 42;
+    const timeoutId = window.setTimeout(() => {
+      setVisibleChars(current => (current >= text.length ? 0 : current + 1));
+    }, delayMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [text.length, visibleChars]);
+
+  return (
+    <p className="flex items-center text-sm text-stone-600 font-mono tracking-tight">
+      <span>{text.slice(0, visibleChars)}</span>
+      <span
+        aria-hidden="true"
+        className="ml-0.5 inline-block h-4 w-px bg-stone-400 animate-pulse"
+      />
+    </p>
+  );
+}
+
 const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
@@ -116,6 +152,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const [isPlayingReply, setIsPlayingReply] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState<string>('all');
   const [inlineSuggestionValue, setInlineSuggestionValue] = useState('');
   const [sendError, setSendError] = useState<ChatSendError | null>(null);
   const socketStatus = useAppSelector(selectSocketStatus);
@@ -422,7 +459,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
     const normalized = text ?? inputValue;
     const trimmed = normalized.trim();
 
-    if (!trimmed || !selectedThreadId || composerBlocked) return;
+    if (!trimmed || !selectedThreadId || composerInteractionBlocked) return;
 
     if (handleSlashCommand(trimmed)) return;
 
@@ -442,8 +479,6 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
       );
       return;
     }
-
-    if (composerBlocked) return;
 
     const sendingThreadId = selectedThreadId;
     const userMessage: ThreadMessage = {
@@ -743,9 +778,14 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
     ? (streamingAssistantByThread[selectedThreadId] ?? null)
     : null;
   const inlineCompletionSuffix = getInlineCompletionSuffix(inputValue, inlineSuggestionValue);
-  // composerBlocked: any thread is in-flight (blocks ALL sends/voice actions).
+  // Blocks all composer interaction while a turn is in-flight, the
+  // proactive welcome opener is pending, or Rust chat is unavailable.
   // isSending: the *selected* thread is in-flight (drives selected-thread UI only).
-  const composerBlocked = Boolean(activeThreadId);
+  const composerInteractionBlocked = isComposerInteractionBlocked({
+    activeThreadId,
+    welcomePending,
+    rustChat,
+  });
   const isSending = Boolean(
     selectedThreadId &&
     (inferenceTurnLifecycleByThread[selectedThreadId] === 'started' ||
@@ -754,9 +794,38 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
   const shouldRenderTimelineBeforeLatestAgentMessage =
     selectedThreadToolTimeline.length > 0 && !isSending && Boolean(latestVisibleAgentMessage);
 
-  const sortedThreads = [...threads].sort(
-    (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
-  );
+  const filteredThreads = useMemo(() => {
+    return threads.filter(t => {
+      if (selectedLabel === 'all') return true;
+      return t.labels?.includes(selectedLabel);
+    });
+  }, [threads, selectedLabel]);
+
+  const sortedThreads = useMemo(() => {
+    return [...filteredThreads].sort(
+      (a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    );
+  }, [filteredThreads]);
+
+  const allLabels = useMemo(() => {
+    return Array.from(new Set(threads.flatMap(t => t.labels ?? []))).sort();
+  }, [threads]);
+
+  // Fixed tab set so categories don't disappear when empty and the active
+  // filter state remains unambiguous regardless of what threads exist.
+  const labelTabs = [
+    { label: 'All', value: 'all' },
+    { label: 'Work', value: 'work' },
+    { label: 'Briefing', value: 'briefing' },
+    { label: 'Notification', value: 'notification' },
+  ];
+
+  // Reset stale selectedLabel when the last thread carrying that label is deleted.
+  useEffect(() => {
+    if (selectedLabel !== 'all' && !allLabels.includes(selectedLabel)) {
+      setSelectedLabel('all');
+    }
+  }, [allLabels, selectedLabel]);
 
   const isSidebar = variant === 'sidebar';
 
@@ -789,9 +858,19 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
               </svg>
             </button>
           </div>
+          <div className="px-4 py-2 border-b border-stone-50">
+            <PillTabBar
+              items={labelTabs}
+              selected={selectedLabel}
+              onChange={setSelectedLabel}
+              containerClassName="flex gap-1 overflow-x-auto py-1 scrollbar-hide"
+            />
+          </div>
           <div className="flex-1 overflow-y-auto">
             {sortedThreads.length === 0 ? (
-              <p className="px-4 py-6 text-xs text-stone-400 text-center">No threads yet</p>
+              <p className="px-4 py-6 text-xs text-stone-400 text-center">
+                {selectedLabel === 'all' ? 'No threads yet' : `No "${selectedLabel}" threads`}
+              </p>
             ) : (
               sortedThreads.map(thread => (
                 <div
@@ -960,7 +1039,8 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                     )}
                   <div
                     className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className="relative w-full md:max-w-[75%]">
+                    <div
+                      className={`relative ${msg.sender === 'user' ? 'w-fit max-w-[75%]' : 'w-full md:max-w-[75%]'}`}>
                       {msg.sender === 'agent' ? (
                         <div className="space-y-1">
                           {splitAgentMessageIntoBubbles(msg.content).map(
@@ -1005,7 +1085,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                           )}
                         </div>
                       ) : (
-                        <div className="rounded-2xl px-4 py-2.5 bg-primary-500 text-white rounded-br-md">
+                        <div className="rounded-2xl px-4 py-2.5 bg-primary-500 text-white rounded-br-md break-words overflow-hidden">
                           <BubbleMarkdown content={msg.content} tone="user" />
                           {latestVisibleMessage?.id === msg.id && (
                             <p className="mt-1 text-[10px] text-white/60">
@@ -1232,7 +1312,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                 <span className="w-2 h-2 rounded-full bg-stone-500 animate-bounce [animation-delay:150ms]" />
                 <span className="w-2 h-2 rounded-full bg-stone-500 animate-bounce [animation-delay:300ms]" />
               </div>
-              <p className="text-sm text-stone-600">Your agent is thinking...</p>
+              <WelcomeThinkingTypewriter />
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center h-full">
@@ -1254,7 +1334,9 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                       title="Approaching usage limit"
                       message={`You've used ${Math.round(Math.max(usagePct10h, usagePct7d) * 100)}% of your inference budget. Upgrade for higher limits.`}
                       ctaLabel="Upgrade"
-                      onCtaClick={() => navigate('/settings/billing')}
+                      onCtaClick={() => {
+                        void openUrl(BILLING_DASHBOARD_URL);
+                      }}
                       dismissible
                       onDismiss={() => dismissBanner('conversations-warning')}
                     />
@@ -1285,7 +1367,9 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                   </div>
                   {shouldShowBudgetCompletedMessage && (
                     <button
-                      onClick={() => navigate('/settings/billing')}
+                      onClick={() => {
+                        void openUrl(BILLING_DASHBOARD_URL);
+                      }}
                       className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-coral-500 hover:bg-coral-400 text-white text-xs font-medium transition-colors">
                       Top Up
                     </button>
@@ -1406,7 +1490,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                   onKeyDown={handleInputKeyDown}
                   placeholder="Type a message..."
                   rows={1}
-                  disabled={isSending || !rustChat}
+                  disabled={composerInteractionBlocked}
                   className="relative z-10 w-full resize-none border-0 bg-transparent pl-4 pr-10 py-2.5 text-sm leading-normal whitespace-pre-wrap break-words font-sans text-stone-900 placeholder:text-stone-400 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 max-h-32 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 {/* Voice input mic hidden per #717 (inputMode='voice' path retained). */}
@@ -1415,7 +1499,7 @@ const Conversations = ({ variant = 'page' }: ConversationsProps = {}) => {
                 onClick={() => {
                   void handleSendMessage();
                 }}
-                disabled={!inputValue.trim() || isSending || !rustChat}
+                disabled={!inputValue.trim() || composerInteractionBlocked}
                 className="w-10 h-10 flex items-center justify-center rounded-full bg-primary-500 hover:bg-primary-600 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0">
                 {isSending ? (
                   <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">

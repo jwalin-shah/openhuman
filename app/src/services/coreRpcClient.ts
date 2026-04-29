@@ -3,6 +3,7 @@ import debug from 'debug';
 
 import { dispatchLocalAiMethod } from '../lib/ai/localCoreAiMemory';
 import { CORE_RPC_TIMEOUT_MS, CORE_RPC_URL } from '../utils/config';
+import { getStoredRpcUrl } from '../utils/configPersistence';
 import { sanitizeError } from '../utils/sanitize';
 
 interface CoreRpcRelayRequest {
@@ -48,6 +49,16 @@ const LEGACY_METHOD_ALIASES: Record<string, string> = {
 let nextJsonRpcId = 1;
 let resolvedCoreRpcUrl: string | null = null;
 let resolvingCoreRpcUrl: Promise<string> | null = null;
+
+/**
+ * Invalidate the cached core RPC URL so the next call to getCoreRpcUrl()
+ * re-resolves from the user-configured or environment-default value.
+ * Call this after the user saves a new RPC URL preference.
+ */
+export function clearCoreRpcUrlCache(): void {
+  resolvedCoreRpcUrl = null;
+  resolvingCoreRpcUrl = null;
+}
 const coreRpcLog = debug('core-rpc');
 const coreRpcError = debug('core-rpc:error');
 
@@ -93,6 +104,12 @@ export async function getCoreRpcUrl(): Promise<string> {
   }
 
   if (!coreIsTauri()) {
+    // Web environment: check for user-configured RPC URL first
+    const storedUrl = getStoredRpcUrl();
+    if (storedUrl && storedUrl !== CORE_RPC_URL) {
+      resolvedCoreRpcUrl = storedUrl;
+      return storedUrl;
+    }
     resolvedCoreRpcUrl = CORE_RPC_URL;
     return CORE_RPC_URL;
   }
@@ -103,6 +120,13 @@ export async function getCoreRpcUrl(): Promise<string> {
 
   const resolvePromise: Promise<string> = (async () => {
     try {
+      // Tauri: check for user-configured URL first
+      const storedUrl = getStoredRpcUrl();
+      if (storedUrl && storedUrl !== CORE_RPC_URL) {
+        resolvedCoreRpcUrl = storedUrl;
+        return storedUrl;
+      }
+
       const url = await invoke<string>('core_rpc_url');
       const trimmed = String(url || '').trim();
       if (!trimmed) {
@@ -116,16 +140,17 @@ export async function getCoreRpcUrl(): Promise<string> {
       resolvedCoreRpcUrl = trimmed || CORE_RPC_URL;
       return resolvedCoreRpcUrl || CORE_RPC_URL;
     } catch (err) {
-      // Silent fallback hid port-mismatch bugs in the past: the UI connected
-      // to a stale default while the real core ran on a different port, and
-      // every call failed with an obscure ECONNREFUSED. Log the underlying
-      // error so the misconfig is visible in the console.
-      coreRpcError('core_rpc_url invoke failed; using build-time default', {
-        fallback: CORE_RPC_URL,
+      // Fallback to a stored override first, then the build-time default.
+      // Keep the underlying invoke failure visible so port mismatches and
+      // shell misconfiguration are diagnosable in dev logs.
+      const storedUrl = getStoredRpcUrl();
+      resolvedCoreRpcUrl = storedUrl || CORE_RPC_URL;
+      coreRpcError('core_rpc_url invoke failed; using fallback RPC URL', {
+        fallback: resolvedCoreRpcUrl,
+        usedStoredUrl: Boolean(storedUrl),
         error: sanitizeError(err),
       });
-      resolvedCoreRpcUrl = CORE_RPC_URL;
-      return CORE_RPC_URL;
+      return resolvedCoreRpcUrl;
     } finally {
       resolvingCoreRpcUrl = null;
     }
