@@ -155,6 +155,7 @@ Watch out for Tauri plugins that inject JS by default. `tauri-plugin-opener` shi
 
 - **`openhuman/`** — Domain logic (memory, channels, config, cron, skills, webhooks, …). RPC controllers in per-domain `rpc.rs`; use `RpcOutcome<T>` per [`AGENTS.md`](AGENTS.md).
 - **Module layout rule**: new functionality goes in a **dedicated subdirectory** (`openhuman/<domain>/mod.rs` + siblings). **Do not** add new standalone `*.rs` files at `src/openhuman/` root.
+  - **God-file splitting**: when a single `.rs` file grows beyond ~500–800 lines, split it into a subdirectory. Organize sub-modules by responsibility: `_core` (types/core logic), `_ops` (operations), `_types` (shared types), `_parse` (parsing), `_send`/`_recv` (I/O), `_rules` (rules/strategies). Re-export from `mod.rs` so the module interface stays stable. Example: `telegram/channel.rs` → `telegram/channel/{mod, channel_core, channel_ops, channel_recv, channel_send, channel_types}.rs`.
 - **Controller schema contract**: shared types in `src/core/mod.rs` (`ControllerSchema`, `FieldSchema`, `TypeSchema`).
 - **Domain schema files**: per-domain `schemas.rs` (e.g. `src/openhuman/cron/schemas.rs`), exported from domain `mod.rs`.
 - **Controller-only exposure**: expose features to CLI and JSON-RPC via the controller registry. **Do not** add domain branches in `src/core/cli.rs` / `src/core/jsonrpc.rs`.
