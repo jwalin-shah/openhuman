@@ -157,6 +157,7 @@ const PrivacyPanel = () => {
                     analyticsEnabled ? 'bg-primary-500' : 'bg-stone-600'
                   }`}
                   role="switch"
+                  aria-label="Toggle Share Anonymized Usage Data"
                   aria-checked={analyticsEnabled}>
                   <span
                     className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
