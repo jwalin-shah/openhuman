@@ -37,17 +37,18 @@ impl ScreenshotTool {
             Some(vec![
                 "sh".into(),
                 "-c".into(),
-                format!(
-                    "if command -v gnome-screenshot >/dev/null 2>&1; then \
-                         gnome-screenshot -f '{output_path}'; \
-                     elif command -v scrot >/dev/null 2>&1; then \
-                         scrot '{output_path}'; \
-                     elif command -v import >/dev/null 2>&1; then \
-                         import -window root '{output_path}'; \
-                     else \
-                         echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
-                     fi"
-                ),
+                "if command -v gnome-screenshot >/dev/null 2>&1; then \
+                     gnome-screenshot -f \"$1\"; \
+                 elif command -v scrot >/dev/null 2>&1; then \
+                     scrot \"$1\"; \
+                 elif command -v import >/dev/null 2>&1; then \
+                     import -window root \"$1\"; \
+                 else \
+                     echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
+                 fi"
+                .into(),
+                "sh".into(),
+                output_path.into(),
             ])
         } else {
             None
@@ -67,16 +68,6 @@ impl ScreenshotTool {
             || format!("screenshot_{timestamp}.png"),
             |n| n.to_string_lossy().to_string(),
         );
-
-        // Reject filenames with shell-breaking characters to prevent injection in sh -c
-        const SHELL_UNSAFE: &[char] = &[
-            '\'', '"', '`', '$', '\\', ';', '|', '&', '\n', '\0', '(', ')',
-        ];
-        if safe_name.contains(SHELL_UNSAFE) {
-            return Ok(ToolResult::error(
-                "Filename contains characters unsafe for shell execution",
-            ));
-        }
 
         let output_path = self.security.workspace_dir.join(&safe_name);
         let output_str = output_path.to_string_lossy().to_string();
@@ -271,17 +262,6 @@ mod tests {
         assert!(!args.is_empty());
     }
 
-    #[tokio::test]
-    async fn screenshot_rejects_shell_injection_filename() {
-        let tool = ScreenshotTool::new(test_security());
-        let result = tool
-            .execute(json!({"filename": "test'injection.png"}))
-            .await
-            .unwrap();
-        assert!(result.is_error);
-        assert!(result.output().contains("unsafe for shell execution"));
-    }
-
     #[test]
     fn screenshot_command_contains_output_path() {
         if !matches!(std::env::consts::OS, "macos" | "linux") {
@@ -345,34 +325,6 @@ mod tests {
             assert!(
                 !result.output().contains("unsafe for shell execution"),
                 "safe filename should not trigger shell-injection guard, got: {}",
-                result.output()
-            );
-        }
-    }
-
-    // ── multiple unsafe chars are all rejected ────────────────────────────────
-
-    #[tokio::test]
-    async fn screenshot_rejects_all_unsafe_chars() {
-        let tool = ScreenshotTool::new(test_security());
-        // Backslash is a path separator on Windows, not a shell-injection risk there.
-        let mut chars = vec!['\'', '"', '`', '$', ';', '|', '&', '(', ')'];
-        if matches!(std::env::consts::OS, "macos" | "linux") {
-            chars.push('\\');
-        }
-        for ch in chars {
-            let filename = format!("test{ch}name.png");
-            let result = tool
-                .execute(serde_json::json!({"filename": filename}))
-                .await
-                .unwrap();
-            assert!(
-                result.is_error,
-                "expected error for filename with char '{ch}', got success"
-            );
-            assert!(
-                result.output().contains("unsafe for shell execution"),
-                "unexpected error message for char '{ch}': {}",
                 result.output()
             );
         }
