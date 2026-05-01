@@ -1,0 +1,3 @@
+## 2024-05-01 - React.memo() on Markdown Components in Streaming Lists
+**Learning:** In chat applications, streaming updates from an AI response cause continuous state changes in the parent conversation view. If child message bubble components (especially those using expensive libraries like `react-markdown`) are not memoized, React will re-render and re-parse the Markdown for *every* previous message in the list on *every* streaming token update. This causes a severe O(n²) performance degradation over the course of a long message.
+**Action:** Always wrap `react-markdown` components (and chat bubbles in general) with `React.memo()`, especially if their props (`content`, `position`, `tone`) are primitives that trigger shallow comparison successfully.
