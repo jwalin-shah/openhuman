@@ -1,0 +1,3 @@
+## 2026-05-01 - Accessibility Labeling for Custom Switches
+**Learning:** Custom 'switch' components built from generic elements (like buttons with `role="switch"`) must be supplemented with `aria-label` attributes to inform screen readers of their specific function, particularly when adjacent text nodes do not serve as explicit labels via `aria-labelledby`.
+**Action:** Whenever introducing interactive components assigned non-native interactive roles (like `role="switch"`), verify that they either possess an explicit `aria-label` or reference a visible label via `aria-labelledby` to maintain accessibility compliance.

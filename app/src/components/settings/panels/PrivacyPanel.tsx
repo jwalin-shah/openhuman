@@ -157,7 +157,8 @@ const PrivacyPanel = () => {
                     analyticsEnabled ? 'bg-primary-500' : 'bg-stone-600'
                   }`}
                   role="switch"
-                  aria-checked={analyticsEnabled}>
+                  aria-checked={analyticsEnabled}
+                  aria-label="Toggle analytics">
                   <span
                     className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
                       analyticsEnabled ? 'translate-x-5' : 'translate-x-0'

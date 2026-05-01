@@ -46,7 +46,8 @@ const SubscriptionPlans = ({
             paymentMethod === 'crypto' ? 'bg-primary-600' : 'bg-stone-300'
           }`}
           role="switch"
-          aria-checked={paymentMethod === 'crypto'}>
+          aria-checked={paymentMethod === 'crypto'}
+          aria-label="Toggle crypto payment method">
           <span
             className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
               paymentMethod === 'crypto' ? 'translate-x-5' : 'translate-x-0'
