@@ -204,30 +204,28 @@ pub fn list(
              FROM integration_notifications
              WHERE 1=1",
         );
-        if provider_filter.is_some() {
-            sql.push_str(" AND provider = ?1");
+        let mut query_params: Vec<rusqlite::types::Value> = Vec::new();
+
+        if let Some(p) = provider_filter {
+            sql.push_str(" AND provider = ?");
+            query_params.push(rusqlite::types::Value::Text(p.to_string()));
         }
-        if min_score.is_some() {
-            if provider_filter.is_some() {
-                sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?2)");
-            } else {
-                sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?1)");
-            }
+        if let Some(s) = min_score {
+            sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?)");
+            query_params.push(rusqlite::types::Value::Real(s as f64));
         }
         sql.push_str(" ORDER BY received_at DESC");
-        sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+        sql.push_str(" LIMIT ? OFFSET ?");
+        query_params.push(rusqlite::types::Value::Integer(limit as i64));
+        query_params.push(rusqlite::types::Value::Integer(offset as i64));
 
         let mut stmt = conn
             .prepare(&sql)
             .context("[notifications::store] prepare list failed")?;
 
-        let rows = match (provider_filter, min_score) {
-            (Some(p), Some(s)) => stmt.query(params![p, s]),
-            (Some(p), None) => stmt.query(params![p]),
-            (None, Some(s)) => stmt.query(params![s]),
-            (None, None) => stmt.query([]),
-        }
-        .context("[notifications::store] list query failed")?;
+        let rows = stmt
+            .query(rusqlite::params_from_iter(query_params))
+            .context("[notifications::store] list query failed")?;
 
         rows_to_notifications(rows)
     })
