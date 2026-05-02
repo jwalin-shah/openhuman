@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import Markdown from 'react-markdown';
 
 import { OPENHUMAN_LINK_EVENT } from '../../../components/OpenhumanLinkModal';
@@ -37,13 +38,13 @@ function OpenhumanLinkPill({ path, label }: { path: string; label: string }) {
   );
 }
 
-export function BubbleMarkdown({
+export const BubbleMarkdown = memo(({
   content,
   tone = 'agent',
 }: {
   content: string;
   tone?: 'agent' | 'user';
-}) {
+}) => {
   const proseTone =
     tone === 'user'
       ? 'prose-invert prose-p:text-white prose-li:text-white prose-a:text-white prose-code:text-white prose-strong:text-white prose-headings:text-white [&_li::marker]:text-white/85'
@@ -75,9 +76,9 @@ export function BubbleMarkdown({
       </Markdown>
     </div>
   );
-}
+});
 
-export function TableCellMarkdown({ content }: { content: string }) {
+export const TableCellMarkdown = memo(({ content }: { content: string }) => {
   return (
     <div className="prose prose-sm max-w-none text-sm text-stone-700 prose-p:my-0 prose-ul:my-0 prose-ol:my-0 prose-li:my-0 prose-code:text-xs prose-code:text-primary-700 prose-a:text-primary-500 prose-strong:text-stone-900 prose-headings:text-sm prose-headings:font-semibold [&_li::marker]:text-stone-700 [&_ul]:my-0 [&_ol]:my-0 [&_ul]:pl-0 [&_ol]:pl-0 [&_ul]:list-inside [&_ol]:list-inside [&_li]:pl-0 [&_li_p]:inline [&_li_p]:m-0">
       <Markdown
@@ -101,15 +102,15 @@ export function TableCellMarkdown({ content }: { content: string }) {
       </Markdown>
     </div>
   );
-}
+});
 
-export function AgentMessageBubble({
+export const AgentMessageBubble = memo(({
   content,
   position = 'single',
 }: {
   content: string;
   position?: AgentBubblePosition;
-}) {
+}) => {
   const segments = parseBubbleSegments(content);
   const textContent = segments
     .filter(s => s.kind === 'text')
@@ -181,4 +182,4 @@ export function AgentMessageBubble({
       )}
     </>
   );
-}
+});
