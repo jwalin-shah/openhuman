@@ -204,8 +204,11 @@ fn build_registered_controllers() -> Vec<RegisteredController> {
 /// before `axum::serve`. Transport code stays domain-agnostic — new domains
 /// with pre-serve startup requirements add themselves here, not in jsonrpc.rs.
 pub async fn bootstrap_controller_runtimes(workspace_dir: &std::path::Path) {
-    crate::openhuman::curated_memory::runtime::bootstrap(workspace_dir).await;
-    crate::openhuman::life_capture::runtime::bootstrap(workspace_dir).await;
+    let workspace_dir = workspace_dir.to_owned();
+    let curated_memory_bootstrap =
+        crate::openhuman::curated_memory::runtime::bootstrap(&workspace_dir);
+    let life_capture_bootstrap = crate::openhuman::life_capture::runtime::bootstrap(&workspace_dir);
+    tokio::join!(curated_memory_bootstrap, life_capture_bootstrap);
 }
 
 /// Aggregates all controller schemas from across the codebase.

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
+const INDEX_VECTOR_DIM: usize = 1536;
+
 /// r2d2 pool of read-only SQLite connections. Used for file-backed indexes
 /// in production so WAL actually buys us concurrent readers; in-memory test
 /// indexes keep the single-connection layout since a shared-cache URI adds
@@ -257,6 +259,13 @@ impl IndexWriter {
     /// single transaction so a failed INSERT doesn't permanently remove the
     /// item's vector. (vec0 doesn't support ON CONFLICT on its primary key.)
     pub async fn upsert_vector(&self, item_id: &uuid::Uuid, vector: &[f32]) -> anyhow::Result<()> {
+        if vector.len() != INDEX_VECTOR_DIM {
+            anyhow::bail!(
+                "vector length {} does not match index dimension {INDEX_VECTOR_DIM}",
+                vector.len()
+            );
+        }
+
         let id = item_id.to_string();
         let v_json = serde_json::to_string(vector).context("serialize vector")?;
         let conn = Arc::clone(&self.conn);
@@ -502,7 +511,9 @@ impl IndexReader {
         // fts5_quote of a whitespace-only string is empty — FTS5 MATCH ""
         // is undefined and may error. Return empty results early.
         if query.is_empty() {
-            debug!("[life_capture] keyword_search: empty pattern after fts5_quote, returning no hits");
+            debug!(
+                "[life_capture] keyword_search: empty pattern after fts5_quote, returning no hits"
+            );
             return Ok(vec![]);
         }
         self.with_read_conn("keyword_search", move |conn| {
@@ -789,6 +800,23 @@ mod writer_tests {
             .unwrap();
         assert_eq!(count, 1, "vector replaced, not duplicated");
     }
+
+    #[tokio::test]
+    async fn upsert_vector_rejects_wrong_dimension() {
+        let idx = PersonalIndex::open_in_memory().await.unwrap();
+        let writer = IndexWriter::new(&idx);
+
+        let mut items = [sample_item("wrong-dim", "text")];
+        writer.upsert(&mut items).await.unwrap();
+        let id = items[0].id;
+        let wrong_dim = vec![0.0_f32; INDEX_VECTOR_DIM - 1];
+
+        let err = writer.upsert_vector(&id, &wrong_dim).await.unwrap_err();
+        assert!(
+            err.to_string().contains("vector length"),
+            "expected dimension mismatch error, got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -842,7 +870,10 @@ mod reader_keyword_tests {
         let idx = PersonalIndex::open_in_memory().await.unwrap();
         let reader = IndexReader::new(&idx);
         let hits = reader.keyword_search("   ", 10).await.unwrap();
-        assert!(hits.is_empty(), "whitespace-only query should yield no hits");
+        assert!(
+            hits.is_empty(),
+            "whitespace-only query should yield no hits"
+        );
     }
 }
 

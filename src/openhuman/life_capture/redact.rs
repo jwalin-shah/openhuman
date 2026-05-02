@@ -4,17 +4,19 @@ use regex::Regex;
 static EMAIL: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").unwrap());
 
-// Catches +1-415-555-0123, (415) 555-0123, 415.555.0123, 4155550123 in 10-15 digit forms.
-// The regex is anchored to require 10-15 total digits (including optional country code prefix)
-// so short numeric sequences like 8-digit invoice/order IDs are not redacted.
-// Matches phone-like runs that REQUIRE separators, so pure digit runs (e.g. 8-digit
-// invoice IDs) don't match. Rust's `regex` crate doesn't support lookaround, so we
-// rely on the mandatory separators plus `redact()` ordering (CC runs before PHONE)
-// to avoid mid-number matches inside longer digit sequences.
+// Catches typical local forms like (415) 555-0123 and +1-415-555-0123, plus
+// E.164 compact numbers such as +14155550123 and +358401234567.
+// The regex requires either a country-coded compact pattern or a separator-rich
+// local form so short numeric IDs like 8-digit invoices are not redacted.
+// Rust's `regex` crate doesn't support lookaround, so we rely on input shape and
+// `redact()` ordering (CC runs before PHONE) to avoid mid-number matches.
 static PHONE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?x)
         (?:
+            # E.164 compact form: +<1-15 digits>, no separators required.
+            \+[1-9]\d{9,14}
+            |
             # With country code: +1-NXX-NXX-XXXX or 1-NXX-NXX-XXXX style
             \+?\d{1,3}[\s\-.]           # country code + mandatory separator
             (?:\(\d{2,4}\)|\d{2,4})[\s\-.]?
@@ -62,6 +64,8 @@ mod tests {
             ("ssn 123-45-6789 then", "ssn <SSN> then"),
             ("card 4111-1111-1111-1111 expires", "card <CC> expires"),
             ("nothing sensitive here", "nothing sensitive here"),
+            ("call +14155550123", "call <PHONE>"),
+            ("my e164 +358401234567", "my e164 <PHONE>"),
         ];
         for (input, expected) in cases {
             assert_eq!(redact(input), expected, "input: {input}");
