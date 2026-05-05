@@ -37,17 +37,18 @@ impl ScreenshotTool {
             Some(vec![
                 "sh".into(),
                 "-c".into(),
-                format!(
-                    "if command -v gnome-screenshot >/dev/null 2>&1; then \
-                         gnome-screenshot -f '{output_path}'; \
-                     elif command -v scrot >/dev/null 2>&1; then \
-                         scrot '{output_path}'; \
-                     elif command -v import >/dev/null 2>&1; then \
-                         import -window root '{output_path}'; \
-                     else \
-                         echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
-                     fi"
-                ),
+                "if command -v gnome-screenshot >/dev/null 2>&1; then \
+                     gnome-screenshot -f \"$1\"; \
+                 elif command -v scrot >/dev/null 2>&1; then \
+                     scrot \"$1\"; \
+                 elif command -v import >/dev/null 2>&1; then \
+                     import -window root \"$1\"; \
+                 else \
+                     echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
+                 fi"
+                .into(),
+                "sh".into(),        // $0 for the inline script
+                output_path.into(), // $1
             ])
         } else {
             None
