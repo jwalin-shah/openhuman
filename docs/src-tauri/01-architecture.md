@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **`app/src-tauri`** crate (Rust package **`OpenHuman`**, binary **`OpenHuman`**) is a **desktop-only** host. It embeds the React UI, registers plugins (deep link, opener, OS, notifications, autostart, updater), manages the main window and tray, and **relays JSON-RPC** to the separately built **`openhuman`** core binary.
+The **`app/src-tauri`** crate (Rust package **`OpenHuman`**, binary **`OpenHuman`**) is a **desktop-only** host. It embeds the React UI, registers plugins (deep link, opener, OS, notifications, autostart, updater), manages the main window and tray, links `openhuman_core`, and starts the core HTTP/JSON-RPC server in-process.
 
 Non-desktop targets fail at compile time (`compile_error!` in `lib.rs`).
 
@@ -12,13 +12,11 @@ Non-desktop targets fail at compile time (`compile_error!` in `lib.rs`).
 app/src-tauri/src/
 ├── lib.rs                 # `run()`, tray/menu actions, plugins, `generate_handler!`, core startup
 ├── main.rs                # Binary entry
-├── core_process.rs        # CoreProcessHandle, spawn/monitor openhuman sidecar
-├── core_rpc.rs            # HTTP client to core JSON-RPC
-├── commands/
-│   ├── mod.rs             # Re-exports
-│   ├── core_relay.rs      # `core_rpc_relay`, service-managed core bootstrap
-│   ├── openhuman.rs       # Daemon host config, systemd-style service helpers
-│   └── window.rs          # show/hide/minimize/close window
+├── core_process.rs        # CoreProcessHandle, start/monitor embedded core server
+├── core_rpc.rs            # Shared core RPC URL/auth helpers for Tauri-side callers
+├── webview_accounts/      # Account webview windows, permissions, notifications
+├── screen_capture/        # Screen-share sessions and thumbnail capture
+├── notification_settings/ # Notification preferences
 └── utils/
     ├── mod.rs
     └── dev_paths.rs       # Resolve bundled AI prompts paths
@@ -29,13 +27,13 @@ There is **no** `src-tauri/src/services/session_service.rs` in this tree; sessio
 ## Data flow: UI → core
 
 ```
-React (invoke)
-    → core_rpc_relay { method, params, serviceManaged? }
-        → core_rpc::call HTTP POST to OPENHUMAN_CORE_RPC_URL
-            → openhuman binary (src/bin/openhuman.rs → core_server)
+React coreRpcClient
+    → invoke("core_rpc_url") + invoke("core_rpc_token")
+    → fetch(OPENHUMAN_CORE_RPC_URL, Authorization: Bearer <token>)
+        → embedded openhuman_core server (core::jsonrpc)
 ```
 
-`CoreProcessHandle` in `core_process.rs` starts or waits for the sidecar; `commands/core_relay.rs` optionally ensures a **service-managed** core is running before relaying.
+`CoreProcessHandle` in `core_process.rs` starts the embedded core server, generates the per-process bearer token, and waits for its localhost RPC port to become ready. If a standalone `openhuman-core run` harness is already bound to the port, the default policy treats it as stale unless `OPENHUMAN_CORE_REUSE_EXISTING=1` is set for explicit debugging.
 
 ## Window and tray behavior
 
@@ -46,7 +44,7 @@ React (invoke)
 
 ## Bundled resources
 
-`tauri.conf.json` bundles **`../../skills/skills`** and **`../../src/openhuman/agent/prompts`** so skills and prompt markdown ship with the app.
+`tauri.conf.json` bundles **`../../src/openhuman/agent/prompts`** and recipe resources so prompt markdown and desktop recipes ship with the app.
 
 ## Related
 

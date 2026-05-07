@@ -23,15 +23,21 @@ cd openhuman
 # 2) Install JS deps (workspace)
 pnpm install
 
-# 3) Build Rust core binary
-cargo build --manifest-path Cargo.toml --bin openhuman
-
-# 4) Stage core sidecar for the desktop app
-cd app
-pnpm core:stage
-
-# 5) Build desktop app artifacts
+# 3) Build the production web UI bundle
 pnpm build
+
+# 4) Build Tauri desktop app artifacts
+pnpm --filter openhuman-app tauri:build:ui
+```
+
+The desktop app links the Rust core crate in-process through `app/src-tauri`;
+there is no sidecar staging step in the current build. `pnpm build` only
+produces the Vite web UI; use the Tauri build command for desktop bundles.
+Build the standalone `openhuman-core` binary only when you need the CLI/server
+harness:
+
+```bash
+cargo build --manifest-path Cargo.toml --bin openhuman-core
 ```
 
 For local development instead of production build:
@@ -93,7 +99,8 @@ sudo apt install xvfb
 
 ```bash
 cd app
-pnpm tauri build --target aarch64-unknown-linux-gnu
+pnpm tauri:ensure
+cargo tauri build --target aarch64-unknown-linux-gnu -- --bin OpenHuman
 ```
 
 ### Running the ARM binary
@@ -160,7 +167,6 @@ Manual download links (all platforms):
 Quit the running instance and try again.
 Workaround:
   pkill -f "OpenHuman.app/Contents"
-  pkill -f "openhuman-core"
 ```
 
 **Cause**
@@ -173,7 +179,6 @@ Quit the other OpenHuman instance and re-run. Fastest path:
 
 ```bash
 pkill -f "OpenHuman.app/Contents"
-pkill -f "openhuman-core"
 pnpm dev:app
 ```
 
@@ -183,11 +188,11 @@ If the lock is left behind by a crashed process (PID no longer alive), the prefl
 
 Dev and release builds still share `com.openhuman.app` as the cache identifier. Isolating dev to a separate `com.openhuman.app.dev` cache requires changes to the vendored `tauri-runtime-cef` (cache path is built inside the runtime from the bundle identifier, not exposed to the openhuman shell). Tracked as a follow-up to #864.
 
-### Stale `openhuman` RPC process on the core port
+### Stale standalone core RPC listener on the core port
 
 **Symptom**
 
-A previous Tauri build or `openhuman-core run` harness left a process listening on `OPENHUMAN_CORE_PORT` (default `7788`). Until issue #1130 the new Tauri build would silently attach to that listener — leading to version drift and 401s when the new build's `OPENHUMAN_CORE_TOKEN` didn't match.
+A previous Tauri build or standalone `openhuman-core run` harness left a process listening on `OPENHUMAN_CORE_PORT` (default `7788`). Until issue #1130 the new Tauri build would silently attach to that listener — leading to version drift and 401s when the new build's `OPENHUMAN_CORE_TOKEN` didn't match.
 
 **Current behavior (issue #1130)**
 

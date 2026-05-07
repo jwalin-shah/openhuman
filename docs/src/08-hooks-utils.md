@@ -190,7 +190,7 @@ if (DEBUG) {
 ```
 
 > **Do not** import `BACKEND_URL` directly to make API calls. Resolve the URL
-> at runtime so the core sidecar's `api_url` (set on the login screen via
+> at runtime so the core runtime's `api_url` (set on the login screen via
 > `openhuman.config_resolve_api_url`) takes effect:
 >
 > ```typescript

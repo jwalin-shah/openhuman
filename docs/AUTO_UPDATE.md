@@ -2,8 +2,8 @@
 
 The desktop shell (`app/src-tauri`) auto-updates itself via Tauri's
 [`plugin-updater`](https://tauri.app/plugin/updater/) against a manifest
-published on GitHub Releases. The OpenHuman core sidecar (`openhuman` binary)
-ships inside the `.app` bundle, so a shell update upgrades both.
+published on GitHub Releases. The desktop shell links the `openhuman_core`
+crate in-process, so a shell update upgrades the bundled core runtime too.
 
 ## Architecture
 
@@ -144,8 +144,8 @@ artifacts. Use this recipe.
    The app relaunches itself; the new bundle's version (in
    **Settings → About**) should match the published release.
 
-7. **Confirm the core sidecar came back up.** `[core]` log lines should
-   appear after relaunch and `core_rpc` calls from the UI must succeed.
+7. **Confirm the embedded core came back up.** `[core]` log lines should
+   appear after relaunch and `coreRpcClient` calls from the UI must succeed.
 
 ### Troubleshooting
 
