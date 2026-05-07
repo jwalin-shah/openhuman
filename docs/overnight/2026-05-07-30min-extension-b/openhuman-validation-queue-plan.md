@@ -6,6 +6,12 @@ Branch: `codex/goal-openhuman-validation-queue-plan`
 HEAD at audit start: `f11f217809841cf8e3a7f694d8e80967d8e188b8`  
 Scope: read-only planning/synthesis; this report is the only intended repo write.
 
+2026-05-07 reconciliation note: the sidecar/E2E-build findings in this report
+were captured before OpenHuman PR #34 was merged. PR #34 is now merged as
+`d3a9bb848c73572e51fbf4a4be7fb1b0ea384a1e`; do not treat the pre-#34
+`scripts/stage-core-sidecar.mjs` and sidecar-doc findings below as fresh
+blockers unless they still reproduce on current `main`.
+
 ## Executive Summary
 
 This second-pass audit confirms the first-pass finding: OpenHuman's most urgent validation-readiness blocker is not missing product code, but drift between the current in-process Tauri core and older sidecar-era scripts/docs. The current `app/package.json` says `core:stage` is a no-op because the sidecar was removed, yet `app/scripts/e2e-build.sh` still calls the missing `scripts/stage-core-sidecar.mjs`, so E2E build validation fails before it reaches Tauri.
