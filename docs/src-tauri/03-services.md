@@ -1,11 +1,11 @@
 # Core bridge & helpers (`app/src-tauri`)
 
-This document replaces the old “SessionService / SocketService” split. The Tauri crate **does not** embed a duplicate Socket.io server or Telegram client; instead it focuses on **process management** and **HTTP JSON-RPC** to the **`openhuman`** binary.
+This document replaces the old “SessionService / SocketService” split. The Tauri crate **does not** embed a duplicate Socket.io server or Telegram client; instead it focuses on desktop host concerns, the **in-process core lifecycle**, and **HTTP JSON-RPC** to the embedded core server.
 
 ## `CoreProcessHandle` (`core_process.rs`)
 
-- Resolves the **`openhuman`** executable (staged under `binaries/` or `PATH` / dev layout).
-- Starts or attaches to the core process and exposes its RPC URL (`OPENHUMAN_CORE_RPC_URL`).
+- Starts the embedded `openhuman_core` HTTP/JSON-RPC server as a Tokio task and exposes its RPC URL (`OPENHUMAN_CORE_RPC_URL`).
+- Detects stale standalone `openhuman-core` listeners on the core port and replaces them unless `OPENHUMAN_CORE_REUSE_EXISTING=1` is set for an explicit debug harness.
 - Used during app setup in `lib.rs` (`app.manage(core_handle)`).
 
 ## `core_rpc` (`core_rpc.rs`)
@@ -15,7 +15,7 @@ This document replaces the old “SessionService / SocketService” split. The T
 
 ## `commands/core_relay.rs`
 
-- **`core_rpc_relay`** — ensures the core is running (in-process handle or **service-managed** path), then calls `core_rpc`.
+- **`core_rpc_relay`** — ensures the core is running through the in-process handle, then calls `core_rpc`.
 - **`ensure_service_managed_core_running`** — bootstraps systemd/launchd-style service when RPC is down (platform-specific behavior inside core CLI).
 
 ## `commands/openhuman.rs`

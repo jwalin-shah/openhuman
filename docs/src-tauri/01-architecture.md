@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **`app/src-tauri`** crate (Rust package **`OpenHuman`**, binary **`OpenHuman`**) is a **desktop-only** host. It embeds the React UI, registers plugins (deep link, opener, OS, notifications, autostart, updater), manages the main window and tray, and **relays JSON-RPC** to the separately built **`openhuman`** core binary.
+The **`app/src-tauri`** crate (Rust package **`OpenHuman`**, binary **`OpenHuman`**) is a **desktop-only** host. It embeds the React UI, registers plugins (deep link, opener, OS, notifications, autostart, updater), manages the main window and tray, links `openhuman_core`, and **relays JSON-RPC** to the core server it starts in-process.
 
 Non-desktop targets fail at compile time (`compile_error!` in `lib.rs`).
 
@@ -12,7 +12,7 @@ Non-desktop targets fail at compile time (`compile_error!` in `lib.rs`).
 app/src-tauri/src/
 ├── lib.rs                 # `run()`, tray/menu actions, plugins, `generate_handler!`, core startup
 ├── main.rs                # Binary entry
-├── core_process.rs        # CoreProcessHandle, spawn/monitor openhuman sidecar
+├── core_process.rs        # CoreProcessHandle, start/monitor embedded core server
 ├── core_rpc.rs            # HTTP client to core JSON-RPC
 ├── commands/
 │   ├── mod.rs             # Re-exports
@@ -32,10 +32,10 @@ There is **no** `src-tauri/src/services/session_service.rs` in this tree; sessio
 React (invoke)
     → core_rpc_relay { method, params, serviceManaged? }
         → core_rpc::call HTTP POST to OPENHUMAN_CORE_RPC_URL
-            → openhuman binary (src/bin/openhuman.rs → core_server)
+            → embedded openhuman_core server (core::jsonrpc)
 ```
 
-`CoreProcessHandle` in `core_process.rs` starts or waits for the sidecar; `commands/core_relay.rs` optionally ensures a **service-managed** core is running before relaying.
+`CoreProcessHandle` in `core_process.rs` starts the embedded core server and waits for its localhost RPC port to become ready. If a standalone `openhuman-core run` harness is already bound to the port, the default policy treats it as stale unless `OPENHUMAN_CORE_REUSE_EXISTING=1` is set for explicit debugging.
 
 ## Window and tray behavior
 
@@ -46,7 +46,7 @@ React (invoke)
 
 ## Bundled resources
 
-`tauri.conf.json` bundles **`../../skills/skills`** and **`../../src/openhuman/agent/prompts`** so skills and prompt markdown ship with the app.
+`tauri.conf.json` bundles **`../../src/openhuman/agent/prompts`** and recipe resources so prompt markdown and desktop recipes ship with the app.
 
 ## Related
 

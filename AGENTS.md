@@ -11,9 +11,9 @@ This file orients contributors and coding agents. Authoritative narrative archit
 | Path                    | Role                                                                                                                                                                                                        |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`app/`**              | Yarn workspace **`openhuman-app`**: Vite + React (`app/src/`), Tauri desktop host (`app/src-tauri/`), Vitest tests                                                                                          |
-| **Repo root `src/`**    | Rust library **`openhuman_core`** and **`openhuman`** CLI binary entrypoint (`src/main.rs`) — `core_server`, `openhuman::*` domains, skills runtime (QuickJS / `rquickjs`), MCP routing in the core process |
+| **Repo root `src/`**    | Rust library **`openhuman_core`** and standalone **`openhuman-core`** CLI/server entrypoint (`src/main.rs`) — `core_server`, `openhuman::*` domains, skills runtime (QuickJS / `rquickjs`), MCP routing in the core process |
 | **Skills registry**     | **[`tinyhumansai/openhuman-skills`](https://github.com/tinyhumansai/openhuman-skills)** on GitHub — canonical skill packages and TS build; not vendored in this tree (see blurb below).                     |
-| **`Cargo.toml`** (root) | Core crate; `cargo build --bin openhuman` produces the sidecar the UI stages via `app`’s `core:stage`                                                                                                       |
+| **`Cargo.toml`** (root) | Core crate; `cargo build --bin openhuman-core` produces the standalone CLI/server harness. The desktop app links `openhuman_core` in-process through `app/src-tauri`.                                      |
 | **`docs/`**             | Architecture and module guides (numbered pages under `docs/src/`, `docs/src-tauri/`)                                                                                                                        |
 
 Commands in documentation assume the **repo root** unless noted: `pnpm dev` runs the `app` workspace.
@@ -26,7 +26,7 @@ Commands in documentation assume the **repo root** unless noted: `pnpm dev` runs
 
 - **Shipped product**: desktop — Windows, macOS, Linux (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) “Platform reach”).
 - **Tauri host** (`app/src-tauri`): **desktop-only** (`compile_error!` for non-desktop targets). Do not add Android/iOS branches inside `app/src-tauri`.
-- **Core binary** (`openhuman`): spawned/staged as a **sidecar**; the Web UI talks to it over HTTP (`core_rpc_relay` + `core_rpc` client), not by re-implementing domain logic in the shell.
+- **Core runtime**: the desktop app links `openhuman_core` into the Tauri host and starts the core HTTP/JSON-RPC server **in-process**. The standalone **`openhuman-core`** binary remains for CLI, debug, service, and release harnesses; do not treat it as the current desktop runtime path.
 
 **Where logic lives**
 
@@ -53,8 +53,8 @@ pnpm lint
 pnpm format
 pnpm format:check
 
-# Stage openhuman core binary next to Tauri resources (required for core RPC)
-cd app && pnpm core:stage
+# No current sidecar staging command is needed; app/package.json keeps
+# core:stage as a compatibility no-op for legacy callers.
 
 # Skills — develop in the GitHub registry repo, then build (see tinyhumansai/openhuman-skills).
 # If you keep a local clone path wired in app scripts, you can also run:
@@ -63,7 +63,7 @@ pnpm workspace openhuman-app skills:watch
 
 # Rust — core library + CLI (repo root)
 cargo check --manifest-path Cargo.toml
-cargo build --manifest-path Cargo.toml --bin openhuman
+cargo build --manifest-path Cargo.toml --bin openhuman-core
 
 # Rust — Tauri shell only
 cargo check --manifest-path app/src-tauri/Cargo.toml
@@ -185,7 +185,7 @@ Two automation backends:
 - **Build + run**:
 
 ```bash
-# Build app + stage core sidecar (detects macOS vs Linux automatically)
+# Build the E2E app with the in-process core (detects macOS vs Linux automatically)
 pnpm test:e2e:build
 
 # Run one spec
@@ -205,7 +205,7 @@ docker compose -f e2e/docker-compose.yml run --rm e2e
   - Assert both UI outcomes and backend/mock effects when relevant.
   - Add failure diagnostics (request logs, `dumpAccessibilityTree()`) for faster debugging by agents.
 
-### Deterministic core-sidecar reset
+### Deterministic core workspace reset
 
 By default, `app/scripts/e2e-run-spec.sh` creates and cleans a temp `OPENHUMAN_WORKSPACE`
 automatically when the variable is not provided.
@@ -221,7 +221,7 @@ rm -rf "$OPENHUMAN_WORKSPACE"
 
 - `OPENHUMAN_WORKSPACE` redirects core config + workspace storage away from `~/.openhuman`.
 - Default reset strategy:
-  - Rebuild/stage sidecar once per E2E run (`pnpm test:e2e:build`).
+  - Build the Tauri app once per E2E run (`pnpm test:e2e:build`); the core server starts in-process with the host.
   - Isolate state per test case with a fresh temp workspace (default behavior in `e2e-run-spec.sh`).
 
 ### Rust tests with mock backend
@@ -249,7 +249,7 @@ run_case() {
 - Add/update unit tests for logic changes before stacking additional features.
 - Add/update E2E coverage for user-visible flows and cross-process integration behavior.
 - Keep new tests independent, deterministic, and debuggable from logs alone.
-- When touching core/sidecar behavior, validate both:
+- When touching core runtime or relay behavior, validate both:
   - `pnpm test:unit`
   - targeted E2E spec(s) via `app/scripts/e2e-run-spec.sh`
 
@@ -289,7 +289,7 @@ Bundled prompts live under **`src/openhuman/agent/prompts/`** at the **repositor
 
 ## Tauri shell (`app/src-tauri/`)
 
-Thin desktop host: window management, daemon health bridging, **core process lifecycle** (`core_process`, `CoreProcessHandle`), and **JSON-RPC relay** to the **`openhuman`** sidecar (`core_rpc_relay`, `core_rpc`).
+Thin desktop host: window management, daemon health bridging, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), and **JSON-RPC relay** to the embedded core server (`core_rpc_relay`, `core_rpc`).
 
 Registered IPC commands (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)) include **`greet`**, **`write_ai_config_file`**, **`ai_get_config`**, **`ai_refresh_config`**, **`core_rpc_relay`**, **window** commands, and **OpenHuman service / daemon host** helpers (`openhuman_*`).
 
@@ -458,7 +458,7 @@ let resp: BillingChargeResponse = request_native_global(
 
 ## Desktop shell (Tauri) vs application code
 
-In the parent **OpenHuman** desktop app, **Tauri / Rust is a delivery vehicle**: windowing, process lifecycle, IPC to the core sidecar, and other host concerns. **Keep as much UI behavior and product logic as practical in TypeScript/React** (`app/`). Avoid growing Rust in the shell for flows that belong in the web layer unless there is a hard platform or security reason.
+In the parent **OpenHuman** desktop app, **Tauri / Rust is a delivery vehicle**: windowing, in-process core lifecycle, IPC/RPC bridging, and other host concerns. **Keep as much UI behavior and product logic as practical in TypeScript/React** (`app/`). Avoid growing Rust in the shell for flows that belong in the web layer unless there is a hard platform or security reason.
 
 ## Git workflow
 
@@ -498,11 +498,11 @@ Follow this order so behavior is **specified**, **proven in Rust**, **proven ove
 3. **JSON-RPC E2E** — Add or extend **integration-style tests** that call the real HTTP JSON-RPC surface (e.g. [`tests/json_rpc_e2e.rs`](tests/json_rpc_e2e.rs), mock backend / [`scripts/test-rust-with-mock.sh`](scripts/test-rust-with-mock.sh) as appropriate) so methods, params, and outcomes match what the UI will call.
 4. **UI in the Tauri app** — Build **React** screens, state, and **`core_rpc_relay` / `coreRpcClient`** usage in `app/`; keep **business rules** in the core, not duplicated in the shell.
 5. **App unit tests** — Cover components, hooks, and clients with **Vitest** (`pnpm test` / `pnpm test:unit` in `app/`).
-6. **App E2E** — Add **desktop E2E** specs where the feature is user-visible (`pnpm test:e2e*`, isolated workspace — see [Testing Guide (Unit + E2E)](#testing-guide-unit--e2e)) so the full stack (UI → Tauri → sidecar) behaves as intended.
+6. **App E2E** — Add **desktop E2E** specs where the feature is user-visible (`pnpm test:e2e*`, isolated workspace — see [Testing Guide (Unit + E2E)](#testing-guide-unit--e2e)) so the full stack (UI → Tauri → in-process core) behaves as intended.
 
 **Capability catalog** — When a change adds, removes, renames, relocates, or materially changes a user-facing feature, update **`src/openhuman/about_app/`** in the same work so the runtime capability catalog remains the source of truth for what the app can do.
 
-**Debug logging (throughout)** — Add **lots of development-oriented logging** as you build, not as an afterthought. In **Rust**, use `log` / `tracing` at **`debug`** or **`trace`** on RPC entry and exit, error paths, state transitions, and any branch that is hard to infer from tests alone. In **`app/`**, follow existing patterns (e.g. the **`debug`** npm package with a **namespace** per area) plus **dev-only** detail where useful. Prefer **grep-friendly prefixes** (`[feature]`, domain name, or JSON-RPC method) so terminal output from **sidecar**, **Tauri**, and **WebView** can be correlated during `pnpm dev` / `tauri dev`. **Never** log secrets, raw JWTs, API keys, or full PII—redact or omit.
+**Debug logging (throughout)** — Add **lots of development-oriented logging** as you build, not as an afterthought. In **Rust**, use `log` / `tracing` at **`debug`** or **`trace`** on RPC entry and exit, error paths, state transitions, and any branch that is hard to infer from tests alone. In **`app/`**, follow existing patterns (e.g. the **`debug`** npm package with a **namespace** per area) plus **dev-only** detail where useful. Prefer **grep-friendly prefixes** (`[feature]`, domain name, or JSON-RPC method) so terminal output from **core**, **Tauri**, and **WebView** can be correlated during `pnpm dev` / `tauri dev`. **Never** log secrets, raw JWTs, API keys, or full PII—redact or omit.
 
 **Planning rule:** When scoping a feature, define the **E2E scenarios (core RPC + app)** up front. Those scenarios should **cover the full intended scope**—happy paths, failure modes, auth or policy gates, and regressions you care about. If a scenario is not testable end-to-end, the spec is incomplete or the cut is too large; split or add harness support first.
 
@@ -510,7 +510,7 @@ Follow this order so behavior is **specified**, **proven in Rust**, **proven ove
 
 ## Key patterns (concise)
 
-- **Debug logging**: Ship **heavy `debug`/`trace` (Rust)** and **namespaced `debug` / dev logs (`app/`)** on new flows so sidecar + WebView output is easy to grep; see [Feature design workflow](#feature-design-workflow-new-capabilities). Never log secrets or raw tokens.
+- **Debug logging**: Ship **heavy `debug`/`trace` (Rust)** and **namespaced `debug` / dev logs (`app/`)** on new flows so core + WebView output is easy to grep; see [Feature design workflow](#feature-design-workflow-new-capabilities). Never log secrets or raw tokens.
 - **`src/openhuman/`**: New features go in a **folder/module**, not new root-level `src/openhuman/*.rs` files (see Rust core section).
 - **File size**: Prefer ≤ ~500 lines per source file; split modules when growing.
 - **Pre-merge checks** (when touching code): Prettier, ESLint, `tsc --noEmit` in `app/`; `cargo fmt` + `cargo check` for changed Rust (`Cargo.toml` at root and/or `app/src-tauri/Cargo.toml` as appropriate).
@@ -523,7 +523,7 @@ Follow this order so behavior is **specified**, **proven in Rust**, **proven ove
 
 - **macOS deep links**: Often require a built **`.app`** bundle; not only `tauri dev`. See [`docs/telegram-login-desktop.md`](docs/telegram-login-desktop.md) if applicable.
 - **`window.__TAURI__`**: Not assumed at module load; guard Tauri usage accordingly.
-- **Core sidecar**: Must be staged/built so `core_rpc` can reach the `openhuman` binary (see `scripts/stage-core-sidecar.mjs`).
+- **Core runtime**: The desktop app starts the core server in-process. Build `openhuman-core` only for standalone CLI/debug harnesses.
 
 ---
 
@@ -535,7 +535,8 @@ _Last aligned with monorepo layout (`app/` + root `src/`), QuickJS skills in `op
 
 ### Environment overview
 
-Two services run independently for development:
+The desktop app starts its core server in-process. For browser-only debugging
+or standalone RPC work, these services can also run independently:
 
 | Service | Start command | Port | Notes |
 |---------|--------------|------|-------|

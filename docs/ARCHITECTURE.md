@@ -11,12 +11,12 @@ OpenHuman is a cross-platform communication and automation platform purpose-buil
 | Path                    | Contents                                                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **`app/`**              | Yarn workspace **`openhuman-app`**: Vite/React UI (`app/src/`), Tauri shell (`app/src-tauri/`), Vitest tests                                                       |
-| **Repo root `src/`**    | Rust **`openhuman_core`** library + **`openhuman`** CLI binary — `core_server`, JSON-RPC, QuickJS skills runtime (`src/openhuman/skills/`), channels, memory, etc. |
-| **`Cargo.toml`** (root) | Builds `openhuman` binary (`cargo build --bin openhuman`) staged into `app/src-tauri/binaries/` for the desktop bundle                                             |
+| **Repo root `src/`**    | Rust **`openhuman_core`** library + standalone **`openhuman-core`** CLI/server binary — `core_server`, JSON-RPC, QuickJS skills runtime (`src/openhuman/skills/`), channels, memory, etc. |
+| **`Cargo.toml`** (root) | Builds the standalone `openhuman-core` binary (`cargo build --bin openhuman-core`) for CLI/debug/release harnesses. The desktop app links `openhuman_core` in-process.                  |
 | **`skills/`**           | Skill packages consumed by the runtime                                                                                                                             |
 | **`docs/`**             | This book + per-tree guides (`docs/src/`, `docs/src-tauri/`)                                                                                                       |
 
-The desktop app **WebView** loads the UI from `app/`; heavy RPC and skills run in the **`openhuman`** process, reachable over HTTP from the Tauri host (`core_rpc_relay`).
+The desktop app **WebView** loads the UI from `app/`; heavy RPC and skills run in the Rust core server embedded inside the Tauri host, reachable over localhost HTTP from `core_rpc_relay`. The standalone `openhuman-core` binary is still used for CLI, debug, service, and release workflows.
 
 ---
 
@@ -36,7 +36,7 @@ The desktop app **WebView** loads the UI from `app/`; heavy RPC and skills run i
                ARM64    ARM64   ARM64
 ```
 
-Tauri v2 compiles the Rust core into native binaries per platform, embedding the React frontend as a lightweight WebView. Desktop builds produce `.dmg`, `.msi`, `.AppImage`, and `.deb` installers. Additional targets (mobile, web) are out of scope until explicitly documented as supported.
+Tauri v2 compiles the desktop host and links the Rust core crate into that process, embedding the React frontend as a lightweight WebView. Desktop builds produce `.dmg`, `.msi`, `.AppImage`, and `.deb` installers. Additional targets (mobile, web) are out of scope until explicitly documented as supported.
 
 ---
 
@@ -73,7 +73,7 @@ Tauri v2 compiles the Rust core into native binaries per platform, embedding the
      (Socket.io Server)        (Telegram, etc.)
 ```
 
-The frontend communicates with the **openhuman** Rust core in two ways: **Tauri IPC** for a small set of shell commands (windows, AI file helpers, **`core_rpc_relay`**) and **HTTP JSON-RPC** to the core process for business logic and skills. The core owns persistent connections where applicable, cryptographic work for memory/features, and **QuickJS** sandboxed skill execution.
+The frontend communicates with the Rust core in two ways: **Tauri IPC** for a small set of shell commands (windows, AI file helpers, **`core_rpc_relay`**) and **HTTP JSON-RPC** to the in-process core server for business logic and skills. The core owns persistent connections where applicable, cryptographic work for memory/features, and **QuickJS** sandboxed skill execution.
 
 ---
 

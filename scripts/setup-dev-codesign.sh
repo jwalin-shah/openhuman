@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # One-time setup: create a stable local code-signing certificate for the
-# openhuman-core sidecar. Run this once per development machine.
+# OpenHuman desktop app. Run this once per development machine.
 #
 # Why: macOS TCC identifies unsigned binaries by content hash (Mach-O UUID).
-# Every `yarn core:stage` recompiles the sidecar, changing its hash, so TCC
-# no longer matches the old grant. Signing with a stable certificate causes
-# TCC to use the certificate identity instead — grants persist across rebuilds.
+# Rebuilt debug binaries can change their hash, so TCC may no longer match the
+# old grant. Signing with a stable certificate causes TCC to use the
+# certificate identity instead — grants persist across rebuilds.
 #
 # After running this script:
-#   1. yarn core:stage        (signs the sidecar with the new cert)
+#   1. pnpm dev:app           (builds/runs the Tauri app with this identity)
 #   2. In OpenHuman → Request Permissions (removes old stale TCC entry,
-#      registers current binary)
+#      registers current app binary)
 #   3. Grant in System Settings → Refresh Status
-#   From this point the grant survives future `yarn core:stage` runs.
+#   From this point the grant survives future signed dev app rebuilds.
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ trap cleanup EXIT
 # ── Check if already set up ──────────────────────────────────────────────────
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
   echo "[setup-dev-codesign] Certificate \"$IDENTITY\" already exists — nothing to do."
-  echo "[setup-dev-codesign] Run 'yarn core:stage' to sign the sidecar."
+  echo "[setup-dev-codesign] Run 'pnpm dev:app' to build and run the signed Tauri app."
   exit 0
 fi
 
@@ -102,9 +102,9 @@ echo ""
 echo "[setup-dev-codesign] Done. Certificate \"$IDENTITY\" added to login Keychain."
 echo ""
 echo "Next steps:"
-echo "  1. yarn core:stage          — rebuilds and signs the sidecar"
-echo "  2. In OpenHuman click 'Request Permissions' to register the signed binary"
+echo "  1. pnpm dev:app             — builds and runs the signed Tauri app"
+echo "  2. In OpenHuman click 'Request Permissions' to register the signed app binary"
 echo "  3. Grant in System Settings → Privacy & Security → Accessibility"
 echo "  4. Click 'Refresh Status'"
 echo ""
-echo "After this, accessibility grants will survive future 'yarn core:stage' runs."
+echo "After this, accessibility grants will survive future signed dev app rebuilds."

@@ -96,7 +96,6 @@ fi
 export PATH="$PATH_PREFIX:$PATH"
 
 "$PNPM_EXE" tauri:ensure
-"$PNPM_EXE" core:stage
 # Use the vendored tauri-cef CLI (via the pnpm tauri script) so the
 # CEF runtime is correctly bundled. APPLE_SIGNING_IDENTITY is macOS-only
 # and is intentionally omitted here.

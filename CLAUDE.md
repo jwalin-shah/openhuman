@@ -11,8 +11,8 @@ Narrative architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Frontend
 | Path | Role |
 | --- | --- |
 | **`app/`** | Yarn workspace `openhuman-app`: Vite + React (`app/src/`), Tauri desktop host (`app/src-tauri/`), Vitest tests |
-| **`src/`** (root) | Rust lib `openhuman_core` + `openhuman` CLI binary — `core_server`, `openhuman::*` domains, MCP routing |
-| **`Cargo.toml`** (root) | Core crate; `cargo build --bin openhuman` produces the sidecar staged by `app`'s `core:stage` |
+| **`src/`** (root) | Rust lib `openhuman_core` + standalone `openhuman-core` CLI/server binary — `core_server`, `openhuman::*` domains, MCP routing |
+| **`Cargo.toml`** (root) | Core crate; `cargo build --bin openhuman-core` produces the standalone CLI/server harness. The desktop app links `openhuman_core` in-process through `app/src-tauri`. |
 | **`docs/`** | Architecture and module guides |
 
 Commands assume the **repo root**; `pnpm dev` delegates to the `app` workspace. (Repo migrated from yarn to pnpm — `package.json` enforces pnpm via the `packageManager` field.)
@@ -23,7 +23,7 @@ Commands assume the **repo root**; `pnpm dev` delegates to the `app` workspace. 
 
 - **Shipped product**: desktop — Windows, macOS, Linux.
 - **Tauri host** (`app/src-tauri`): desktop-only (`compile_error!` for other targets). No Android/iOS branches.
-- **Core binary** (`openhuman`): spawned as a **sidecar**; the UI talks to it over HTTP (`core_rpc_relay` + `core_rpc` client), not by duplicating domain logic.
+- **Core runtime**: the desktop app links `openhuman_core` into the Tauri host and starts the core HTTP/JSON-RPC server **in-process**. The standalone `openhuman-core` binary remains for CLI, debug, service, and release harnesses.
 
 **Where logic lives**
 - **Rust core**: business logic, execution, domains, RPC, persistence, CLI. Authoritative.
@@ -41,11 +41,11 @@ pnpm typecheck            # Typecheck (app workspace)
 pnpm lint                 # ESLint
 pnpm format               # Prettier write
 pnpm format:check         # Prettier check
-cd app && pnpm core:stage # Stage openhuman binary next to Tauri resources
+# No current sidecar staging command is needed; `core:stage` is a compatibility no-op.
 
 # Rust — core library + CLI
 cargo check --manifest-path Cargo.toml
-cargo build --manifest-path Cargo.toml --bin openhuman
+cargo build --manifest-path Cargo.toml --bin openhuman-core
 
 # Rust — Tauri shell
 cargo check --manifest-path app/src-tauri/Cargo.toml
@@ -131,9 +131,9 @@ docker compose -f e2e/docker-compose.yml run --rm e2e   # Linux E2E on macOS
 
 Use `element-helpers.ts` (`clickNativeButton`, `waitForWebView`, `clickToggle`) — never raw `XCUIElementType*`. Assert UI outcomes and mock effects.
 
-### Deterministic core-sidecar reset
+### Deterministic core workspace reset
 
-`app/scripts/e2e-run-spec.sh` creates and cleans a temp `OPENHUMAN_WORKSPACE` by default. `OPENHUMAN_WORKSPACE` redirects core config + storage away from `~/.openhuman`.
+`app/scripts/e2e-run-spec.sh` creates and cleans a temp `OPENHUMAN_WORKSPACE` by default. `OPENHUMAN_WORKSPACE` redirects core config + storage away from `~/.openhuman`; the E2E app starts the core server in-process with the Tauri host.
 
 ### Rust tests with mock
 
@@ -163,7 +163,7 @@ bash scripts/test-rust-with-mock.sh --test json_rpc_e2e
 
 ## Tauri shell (`app/src-tauri/`)
 
-Thin desktop host: window management, daemon health, **core process lifecycle** (`core_process`, `CoreProcessHandle`), **JSON-RPC relay** (`core_rpc_relay`, `core_rpc`).
+Thin desktop host: window management, daemon health, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), **JSON-RPC relay** (`core_rpc_relay`, `core_rpc`).
 
 Registered IPC (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)): `greet`, `write_ai_config_file`, `ai_get_config`, `ai_refresh_config`, `core_rpc_relay`, window commands, `openhuman_*` daemon helpers.
 
@@ -299,4 +299,4 @@ Specify → prove in Rust → prove over RPC → surface in the UI → test.
 - **Vendored CEF-aware `tauri-cli`**: runtime is CEF; only the vendored CLI at `app/src-tauri/vendor/tauri-cef/crates/tauri-cli` bundles Chromium into `Contents/Frameworks/`. Stock `@tauri-apps/cli` produces a broken bundle (panic in `cef::library_loader::LibraryLoader::new`). `pnpm dev:app` and all `cargo tauri` scripts call `pnpm tauri:ensure` which runs [`scripts/ensure-tauri-cli.sh`](scripts/ensure-tauri-cli.sh). If overwritten, reinstall with `cargo install --locked --path app/src-tauri/vendor/tauri-cef/crates/tauri-cli`.
 - **macOS deep links**: often require a built `.app` bundle, not just `tauri dev`.
 - **Tauri environment guard**: use `isTauri()` (from `app/src/services/webviewAccountService.ts`) or wrap `invoke(...)` in `try/catch`; do not check `window.__TAURI__` directly — it is not present at module load and bypasses the established wrapper contract.
-- **Core sidecar**: must be staged so `core_rpc` can reach the `openhuman` binary (see `scripts/stage-core-sidecar.mjs`).
+- **Core runtime**: the desktop app starts the core server in-process. Build `openhuman-core` only for standalone CLI/debug harnesses.
