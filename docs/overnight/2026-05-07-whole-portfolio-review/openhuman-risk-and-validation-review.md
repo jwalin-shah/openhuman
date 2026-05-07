@@ -5,6 +5,12 @@ Branch: `codex/goal-openhuman-risk-and-validation-review`
 Reviewed HEAD: `f11f217809841cf8e3a7f694d8e80967d8e188b8`  
 Review date: 2026-05-07
 
+2026-05-07 reconciliation note: the sidecar/E2E-build findings in this report
+were captured before OpenHuman PR #34 was merged. PR #34 is now merged as
+`d3a9bb848c73572e51fbf4a4be7fb1b0ea384a1e`; do not treat the pre-#34
+`scripts/stage-core-sidecar.mjs` and sidecar-doc findings below as fresh
+blockers unless they still reproduce on current `main`.
+
 ## Scope and local state
 
 - This pass is read-only queue prep except for this report.
@@ -213,4 +219,3 @@ Use a single E2E spec only when the fixed row genuinely crosses UI to Tauri to c
 pnpm --filter openhuman-app test:e2e:build
 bash app/scripts/e2e-run-spec.sh app/test/e2e/specs/<spec>.spec.ts <id>
 ```
-

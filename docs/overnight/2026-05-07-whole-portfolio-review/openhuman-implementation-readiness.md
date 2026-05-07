@@ -6,6 +6,12 @@ Branch: `codex/goal-openhuman-implementation-readiness`
 Repo: `openhuman`
 Pass type: implementation-readiness
 
+2026-05-07 reconciliation note: the sidecar/E2E-build findings in this report
+were captured before OpenHuman PR #34 was merged. PR #34 is now merged as
+`d3a9bb848c73572e51fbf4a4be7fb1b0ea384a1e`; do not treat the pre-#34
+`scripts/stage-core-sidecar.mjs` and sidecar-doc findings below as fresh
+blockers unless they still reproduce on current `main`.
+
 ## Scope And Inputs
 
 This is a repo-local, read-only implementation readiness pass. I did not edit product code and did not use external services, pushes, PRs, deploys, or tracker updates.
