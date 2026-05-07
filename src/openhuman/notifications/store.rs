@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 
 use crate::openhuman::config::Config;
 
@@ -208,30 +208,28 @@ pub fn list(
              FROM integration_notifications
              WHERE 1=1",
         );
-        if provider_filter.is_some() {
-            sql.push_str(" AND provider = ?1");
+        let mut query_params = Vec::new();
+
+        if let Some(provider) = provider_filter {
+            sql.push_str(" AND provider = ?");
+            query_params.push(Value::Text(provider.to_string()));
         }
-        if min_score.is_some() {
-            if provider_filter.is_some() {
-                sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?2)");
-            } else {
-                sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?1)");
-            }
+        if let Some(score) = min_score {
+            sql.push_str(" AND (importance_score IS NULL OR importance_score >= ?)");
+            query_params.push(Value::Real(score as f64));
         }
         sql.push_str(" ORDER BY received_at DESC");
-        sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+        sql.push_str(" LIMIT ? OFFSET ?");
+        query_params.push(Value::Integer(limit as i64));
+        query_params.push(Value::Integer(offset as i64));
 
         let mut stmt = conn
             .prepare(&sql)
             .context("[notifications::store] prepare list failed")?;
 
-        let rows = match (provider_filter, min_score) {
-            (Some(p), Some(s)) => stmt.query(params![p, s]),
-            (Some(p), None) => stmt.query(params![p]),
-            (None, Some(s)) => stmt.query(params![s]),
-            (None, None) => stmt.query([]),
-        }
-        .context("[notifications::store] list query failed")?;
+        let rows = stmt
+            .query(params_from_iter(query_params))
+            .context("[notifications::store] list query failed")?;
 
         rows_to_notifications(rows)
     })
@@ -671,6 +669,37 @@ mod tests {
         let gmail = list(&config, 10, 0, Some("gmail"), None).unwrap();
         assert_eq!(gmail.len(), 1);
         assert_eq!(gmail[0].provider, "gmail");
+    }
+
+    #[test]
+    fn list_combines_filters_with_limit_and_offset() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(&dir);
+        let base = Utc::now();
+
+        let mut gmail_low = sample_notification("g-low", "gmail");
+        gmail_low.importance_score = Some(0.1);
+        gmail_low.received_at = base;
+
+        let mut gmail_mid = sample_notification("g-mid", "gmail");
+        gmail_mid.importance_score = Some(0.7);
+        gmail_mid.received_at = base + chrono::Duration::seconds(1);
+
+        let mut gmail_high = sample_notification("g-high", "gmail");
+        gmail_high.importance_score = Some(0.9);
+        gmail_high.received_at = base + chrono::Duration::seconds(2);
+
+        let mut slack_high = sample_notification("s-high", "slack");
+        slack_high.importance_score = Some(0.95);
+        slack_high.received_at = base + chrono::Duration::seconds(3);
+
+        for notification in [gmail_low, gmail_mid, gmail_high, slack_high] {
+            insert(&config, &notification).unwrap();
+        }
+
+        let items = list(&config, 1, 1, Some("gmail"), Some(0.5)).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "g-mid");
     }
 
     #[test]
