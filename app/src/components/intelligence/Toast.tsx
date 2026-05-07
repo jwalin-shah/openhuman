@@ -113,6 +113,7 @@ export function Toast({ notification, onRemove }: ToastProps) {
         {/* Close button */}
         <button
           onClick={handleRemove}
+          aria-label="Close"
           className="flex-shrink-0 text-white/70 hover:text-white transition-colors">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path

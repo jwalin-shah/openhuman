@@ -95,6 +95,7 @@ export default function ChannelSetupModal({ definition, onClose }: ChannelSetupM
             </div>
             <button
               onClick={onClose}
+              aria-label="Close"
               className="p-1 text-stone-400 hover:text-stone-900 transition-colors rounded-lg hover:bg-stone-100 flex-shrink-0">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
