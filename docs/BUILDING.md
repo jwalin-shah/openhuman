@@ -23,13 +23,18 @@ cd openhuman
 # 2) Install JS deps (workspace)
 pnpm install
 
-# 3) Build desktop app artifacts
+# 3) Build the production web UI bundle
 pnpm build
+
+# 4) Build Tauri desktop app artifacts
+pnpm --filter openhuman-app tauri:build:ui
 ```
 
 The desktop app links the Rust core crate in-process through `app/src-tauri`;
-there is no sidecar staging step in the current build. Build the standalone
-`openhuman-core` binary only when you need the CLI/server harness:
+there is no sidecar staging step in the current build. `pnpm build` only
+produces the Vite web UI; use the Tauri build command for desktop bundles.
+Build the standalone `openhuman-core` binary only when you need the CLI/server
+harness:
 
 ```bash
 cargo build --manifest-path Cargo.toml --bin openhuman-core
@@ -94,7 +99,8 @@ sudo apt install xvfb
 
 ```bash
 cd app
-pnpm tauri build --target aarch64-unknown-linux-gnu
+pnpm tauri:ensure
+cargo tauri build --target aarch64-unknown-linux-gnu -- --bin OpenHuman
 ```
 
 ### Running the ARM binary

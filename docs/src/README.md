@@ -44,7 +44,7 @@ app/src/
 
 1. **HashRouter** — Fits Tauri and deep-link flows better than browser history in many desktop setups.
 2. **Redux Toolkit + persist** — Centralized state; selective persistence for auth and related slices.
-3. **Core RPC client** — Business logic and skills run in the Rust core embedded in the Tauri host; the UI calls it via HTTP (`core_rpc_relay` / `coreRpcClient`), not only REST. Use the standalone `openhuman-core` binary only for CLI/debug/service harnesses.
+3. **Core RPC client** — Business logic and skills run in the Rust core embedded in the Tauri host; `coreRpcClient` resolves `core_rpc_url` / `core_rpc_token` through Tauri and then sends authenticated HTTP JSON-RPC directly. Use the standalone `openhuman-core` binary only for CLI/debug/service harnesses.
 4. **No MTProto provider** — The current tree does not ship a `TelegramProvider` or `mtprotoService`; any Telegram mentions may be legacy UI or future channels work.
 
 ## Getting started

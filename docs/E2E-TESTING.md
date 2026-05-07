@@ -178,7 +178,7 @@ The first Docker build compiles Rust + tauri-driver from source. Subsequent runs
 
 **File**: `app/test/e2e/specs/notifications.spec.ts`
 
-Tests notification RPC methods via the live core sidecar and the Notifications UI page:
+Tests notification RPC methods via the live embedded core and the Notifications UI page:
 
 - `notification_ingest` — creates a new notification via core RPC
 - `notification_list` — verifies the ingested notification is returned
@@ -206,4 +206,3 @@ bash app/scripts/e2e-agent-review.sh
 ```
 
 Artifacts land in `app/test/e2e/artifacts/<timestamp>-agent-review/`. Full details + helper API: [`AGENT-OBSERVABILITY.md`](AGENT-OBSERVABILITY.md). Any failing test triggers `wdio.conf.ts`'s `afterTest` hook, which writes `failure-*.png` + `failure-*.source.xml` into the same run dir.
-

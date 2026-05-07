@@ -202,7 +202,7 @@ For the frontend, put `VITE_SENTRY_DSN` in `app/.env.local`.
   release.
 - **Rust frames show function name but no source** — the `.src.zip` for
   this release didn't upload, OR the `debug-images` integration isn't
-  active. Check the "Upload core sidecar debug symbols to Sentry" workflow
+  active. Check the core debug-symbol upload workflow
   log for `Bundled N source files`; absence means `--include-sources`
   didn't take effect or DWARF wasn't emitted (verify the
   `[profile.release] debug = "line-tables-only"` block in `Cargo.toml`).

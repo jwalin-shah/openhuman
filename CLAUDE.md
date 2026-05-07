@@ -163,9 +163,9 @@ bash scripts/test-rust-with-mock.sh --test json_rpc_e2e
 
 ## Tauri shell (`app/src-tauri/`)
 
-Thin desktop host: window management, daemon health, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), **JSON-RPC relay** (`core_rpc_relay`, `core_rpc`).
+Thin desktop host: window management, daemon health, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), and RPC connection discovery for the frontend (`core_rpc_url`, `core_rpc_token`). The frontend `coreRpcClient` sends authenticated HTTP JSON-RPC directly to the embedded core server.
 
-Registered IPC (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)): `greet`, `write_ai_config_file`, `ai_get_config`, `ai_refresh_config`, `core_rpc_relay`, window commands, `openhuman_*` daemon helpers.
+Registered IPC (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)): `core_rpc_url`, `core_rpc_token`, `restart_core_process`, updater commands, notification/window helpers, screen-share session commands, and webview account helpers.
 
 ### CEF child webviews — no new JS injection
 
@@ -275,7 +275,7 @@ Specify → prove in Rust → prove over RPC → surface in the UI → test.
 1. **Specify against the current codebase** — ground in existing domains, controller/registry patterns, JSON-RPC naming (`openhuman.<namespace>_<function>`). No parallel architectures.
 2. **Implement in Rust** — domain logic under `src/openhuman/<domain>/`, schemas + handlers in the registry, unit tests until correct in isolation.
 3. **JSON-RPC E2E** — extend [`tests/json_rpc_e2e.rs`](tests/json_rpc_e2e.rs) / [`scripts/test-rust-with-mock.sh`](scripts/test-rust-with-mock.sh) so RPC methods match what the UI will call.
-4. **UI in Tauri app** — React screens/state using `core_rpc_relay` / `coreRpcClient`. Keep rules in the core.
+4. **UI in Tauri app** — React screens/state using `coreRpcClient` HTTP JSON-RPC. Keep rules in the core.
 5. **App unit tests** — Vitest.
 6. **App E2E** — desktop specs for user-visible flows.
 

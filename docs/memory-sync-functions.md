@@ -323,7 +323,8 @@ For callers going through JSON-RPC (frontend or external). Each maps 1:1 to a `M
 
 **File**: `app/src/utils/tauriCommands/memory.ts`
 
-Each calls the corresponding RPC method above via `core_rpc_relay`.
+Each calls the corresponding RPC method above via `coreRpcClient`, which sends
+authenticated HTTP JSON-RPC to the embedded core server.
 
 | Function | Line | RPC Method |
 |----------|------|------------|

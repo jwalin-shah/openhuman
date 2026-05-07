@@ -16,7 +16,7 @@ OpenHuman is a cross-platform communication and automation platform purpose-buil
 | **`skills/`**           | Skill packages consumed by the runtime                                                                                                                             |
 | **`docs/`**             | This book + per-tree guides (`docs/src/`, `docs/src-tauri/`)                                                                                                       |
 
-The desktop app **WebView** loads the UI from `app/`; heavy RPC and skills run in the Rust core server embedded inside the Tauri host, reachable over localhost HTTP from `core_rpc_relay`. The standalone `openhuman-core` binary is still used for CLI, debug, service, and release workflows.
+The desktop app **WebView** loads the UI from `app/`; heavy RPC and skills run in the Rust core server embedded inside the Tauri host. The UI asks Tauri for `core_rpc_url` and `core_rpc_token`, then `coreRpcClient` sends authenticated HTTP JSON-RPC to that localhost endpoint. The standalone `openhuman-core` binary is still used for CLI, debug, service, and release workflows.
 
 ---
 
@@ -73,7 +73,7 @@ Tauri v2 compiles the desktop host and links the Rust core crate into that proce
      (Socket.io Server)        (Telegram, etc.)
 ```
 
-The frontend communicates with the Rust core in two ways: **Tauri IPC** for a small set of shell commands (windows, AI file helpers, **`core_rpc_relay`**) and **HTTP JSON-RPC** to the in-process core server for business logic and skills. The core owns persistent connections where applicable, cryptographic work for memory/features, and **QuickJS** sandboxed skill execution.
+The frontend communicates with the Rust core in two ways: **Tauri IPC** for a small set of shell commands (window/notification helpers plus `core_rpc_url` and `core_rpc_token`) and **HTTP JSON-RPC** from `coreRpcClient` to the in-process core server for business logic and skills. The core owns persistent connections where applicable, cryptographic work for memory/features, and **QuickJS** sandboxed skill execution.
 
 ---
 

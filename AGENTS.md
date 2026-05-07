@@ -289,9 +289,9 @@ Bundled prompts live under **`src/openhuman/agent/prompts/`** at the **repositor
 
 ## Tauri shell (`app/src-tauri/`)
 
-Thin desktop host: window management, daemon health bridging, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), and **JSON-RPC relay** to the embedded core server (`core_rpc_relay`, `core_rpc`).
+Thin desktop host: window management, daemon health bridging, **in-process core lifecycle** (`core_process`, `CoreProcessHandle`), and RPC connection discovery for the frontend (`core_rpc_url`, `core_rpc_token`). The frontend `coreRpcClient` sends authenticated HTTP JSON-RPC directly to the embedded core server.
 
-Registered IPC commands (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)) include **`greet`**, **`write_ai_config_file`**, **`ai_get_config`**, **`ai_refresh_config`**, **`core_rpc_relay`**, **window** commands, and **OpenHuman service / daemon host** helpers (`openhuman_*`).
+Registered IPC commands (see [`docs/src-tauri/02-commands.md`](docs/src-tauri/02-commands.md)) include **`core_rpc_url`**, **`core_rpc_token`**, **`restart_core_process`**, updater commands, notification/window helpers, screen-share session commands, and webview account helpers.
 
 Deep link plugin is registered where supported; behavior is platform-specific (see platform notes below).
 
@@ -496,7 +496,7 @@ Follow this order so behavior is **specified**, **proven in Rust**, **proven ove
 1. **Specify against the current codebase** — Ground the design in **existing** domains, controller/registry patterns, and JSON-RPC naming (`openhuman.<namespace>_<function>`). Reuse or extend documented flows in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and sibling guides; avoid parallel architectures.
 2. **Implement in Rust** — Add domain logic under `src/openhuman/<domain>/`, wire **schemas + registered handlers** into the shared registry, and land **unit tests** in the crate (`cargo test -p openhuman`, focused modules) until the feature is correct in isolation.
 3. **JSON-RPC E2E** — Add or extend **integration-style tests** that call the real HTTP JSON-RPC surface (e.g. [`tests/json_rpc_e2e.rs`](tests/json_rpc_e2e.rs), mock backend / [`scripts/test-rust-with-mock.sh`](scripts/test-rust-with-mock.sh) as appropriate) so methods, params, and outcomes match what the UI will call.
-4. **UI in the Tauri app** — Build **React** screens, state, and **`core_rpc_relay` / `coreRpcClient`** usage in `app/`; keep **business rules** in the core, not duplicated in the shell.
+4. **UI in the Tauri app** — Build **React** screens, state, and **`coreRpcClient`** HTTP JSON-RPC usage in `app/`; keep **business rules** in the core, not duplicated in the shell.
 5. **App unit tests** — Cover components, hooks, and clients with **Vitest** (`pnpm test` / `pnpm test:unit` in `app/`).
 6. **App E2E** — Add **desktop E2E** specs where the feature is user-visible (`pnpm test:e2e*`, isolated workspace — see [Testing Guide (Unit + E2E)](#testing-guide-unit--e2e)) so the full stack (UI → Tauri → in-process core) behaves as intended.
 

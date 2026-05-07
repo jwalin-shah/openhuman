@@ -6,7 +6,7 @@ OpenHuman’s desktop UI is a **React 19** app (`app/src/`) that:
 
 - Uses **Redux Toolkit** with persistence for session-related state
 - Connects to the backend with **REST** (`apiClient`) and **Socket.io** (`socketService`)
-- Calls the **Rust core** process over HTTP via **`coreRpcClient`** / Tauri **`core_rpc_relay`** (JSON-RPC methods implemented in repo root `src/openhuman/`, exposed through `core_server`)
+- Calls the embedded **Rust core** server over HTTP via **`coreRpcClient`** after resolving **`core_rpc_url`** and **`core_rpc_token`** through Tauri (JSON-RPC methods implemented in repo root `src/openhuman/`, exposed through `core_server`)
 - Loads **AI prompts** from bundled `src/openhuman/agent/prompts` (repo root) and from Tauri **`ai_get_config`** when packaged
 - Uses a **minimal MCP-style** helper layer under `lib/mcp/` (transport, validation) — not a large in-repo Telegram MCP tool bundle
 
@@ -61,7 +61,7 @@ services/
   ├─ apiClient        → REST to a URL resolved at runtime via `services/backendUrl#getBackendUrl`
   ├─ backendUrl       → Calls `openhuman.config_resolve_api_url`; falls back to VITE_BACKEND_URL only outside Tauri
   ├─ socketService    → Socket.io; realtime + MCP-style envelopes
-  └─ coreRpcClient    → HTTP to local openhuman core (JSON-RPC), used with Tauri relay
+  └─ coreRpcClient    → Authenticated HTTP to the embedded openhuman core (JSON-RPC)
 ```
 
 ### Runtime config precedence
@@ -71,10 +71,9 @@ bundle as a hard requirement. At runtime the app resolves them in this order
 (highest first):
 
 1. **Login-screen RPC URL field** — saved via `utils/configPersistence` and
-   restored on next launch. End users configure the sidecar address here, not
+   restored on next launch. End users configure an alternate core RPC address here, not
    by hand-editing `config.toml` or `.env` files.
-2. **Tauri `core_rpc_url` command** — the port the bundled sidecar is
-   listening on for this process.
+2. **Tauri `core_rpc_url` command** — the embedded core server URL for this process.
 3. **`VITE_OPENHUMAN_CORE_RPC_URL`** — build-time fallback for development.
 4. The hardcoded `http://127.0.0.1:7788/rpc` default.
 

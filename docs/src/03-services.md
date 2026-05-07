@@ -13,7 +13,7 @@ app/src/services/
   │   ├─ web: JS client
   │   └─ Tauri: coordinates with Rust-side socket via utils/tauriSocket.ts
   ├─ coreRpcClient.ts
-  │   └─ invoke('core_rpc_relay', …) → local openhuman core (JSON-RPC)
+  │   └─ invoke('core_rpc_url' / 'core_rpc_token') → authenticated HTTP JSON-RPC
   └─ services/api/* — domain REST modules (auth, user, teams, …)
 ```
 
@@ -182,7 +182,7 @@ In Tauri mode, connection and events are bridged through **`utils/tauriSocket.ts
 
 ## Core RPC (`services/coreRpcClient.ts`)
 
-The desktop app runs a separate **`openhuman`** Rust binary (staged under `app/src-tauri/binaries/`). The UI calls JSON-RPC methods on that process through Tauri:
+The desktop app links `openhuman_core` into the Tauri host and starts the core HTTP/JSON-RPC server in-process. The UI calls JSON-RPC methods through `coreRpcClient`:
 
 ```typescript
 import { callCoreRpc } from "../services/coreRpcClient";
@@ -192,11 +192,11 @@ const result = await callCoreRpc<MyType>({
   params: {
     /* … */
   },
-  serviceManaged: false, // true if the relay should ensure the systemd/launchd-style service
+  serviceManaged: false, // kept for compatibility; direct frontend RPC ignores relay routing
 });
 ```
 
-Implementation: `invoke('core_rpc_relay', { request: { method, params, serviceManaged } })` → `app/src-tauri/src/commands/core_relay.rs` → HTTP client in `app/src-tauri/src/core_rpc.rs`.
+Implementation: `coreRpcClient` normalizes legacy method names, invokes Tauri `core_rpc_url` and `core_rpc_token`, then sends `fetch(rpcUrl, { method: "POST", Authorization: "Bearer <token>", body: JSON.stringify(jsonRpcPayload) })` to the embedded core server.
 
 ## Service integration with providers
 

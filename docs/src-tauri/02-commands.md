@@ -2,56 +2,26 @@
 
 All commands are registered in **`app/src-tauri/src/lib.rs`** inside `tauri::generate_handler![...]` (desktop build). Names below are the **Rust** command names (camelCase in JS via serde where applicable).
 
-## Demo / diagnostics
+## Core JSON-RPC connection
 
-| Command | Purpose                                    |
-| ------- | ------------------------------------------ |
-| `greet` | Demo string (safe to remove in production) |
+| Command                | Purpose                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `core_rpc_url`         | Return the localhost HTTP JSON-RPC URL for the embedded core server.                    |
+| `core_rpc_token`       | Return the per-process bearer token that frontend RPC calls must send.                  |
+| `restart_core_process` | Restart the embedded core server through `CoreProcessHandle`.                           |
+| `overlay_parent_rpc_url` | Return the parent RPC URL for overlay windows when `OPENHUMAN_CORE_RPC_URL` is set.   |
 
-## AI configuration (bundled prompts)
-
-| Command                | Purpose                                                                                      |
-| ---------------------- | -------------------------------------------------------------------------------------------- |
-| `ai_get_config`        | Build `AIPreview` from resolved `SOUL.md` / `TOOLS.md` under bundled or dev `src/openhuman/agent/prompts` |
-| `ai_refresh_config`    | Same read path as `ai_get_config` (refresh hook)                                             |
-| `write_ai_config_file` | Write a single `.md` under repo `src/openhuman/agent/prompts` (dev / safe filename checks)                |
-
-## Core JSON-RPC relay
-
-| Command          | Purpose                                                                                                        |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `core_rpc_relay` | Body: `{ method, params?, serviceManaged? }` → forwards to local **`openhuman`** HTTP JSON-RPC (`core_rpc.rs`) |
-
-Use **`app/src/services/coreRpcClient.ts`** (`callCoreRpc`) from the frontend.
+Use **`app/src/services/coreRpcClient.ts`** (`callCoreRpc`) from the frontend. It calls `core_rpc_url` and `core_rpc_token`, then sends authenticated HTTP JSON-RPC directly with `fetch`.
 
 ## Window management
 
-From **`commands/window.rs`** (names may vary slightly; see `lib.rs`):
+From **`lib.rs`** (see `generate_handler!` for the authoritative list):
 
-| Command             | Purpose           |
-| ------------------- | ----------------- |
-| `show_window`       | Show main window  |
-| `hide_window`       | Hide main window  |
-| `toggle_window`     | Toggle visibility |
-| `is_window_visible` | Query visibility  |
-| `minimize_window`   | Minimize          |
-| `maximize_window`   | Maximize          |
-| `close_window`      | Close             |
-| `set_window_title`  | Set title string  |
-
-## OpenHuman daemon / service helpers
-
-From **`commands/openhuman.rs`** (see source for exact payloads):
-
-| Command                            | Purpose                                        |
-| ---------------------------------- | ---------------------------------------------- |
-| `openhuman_get_daemon_host_config` | Read daemon host preferences (e.g. tray)       |
-| `openhuman_set_daemon_host_config` | Persist daemon host preferences                |
-| `openhuman_service_install`        | Install background service (platform-specific) |
-| `openhuman_service_start`          | Start service                                  |
-| `openhuman_service_stop`           | Stop service                                   |
-| `openhuman_service_status`         | Query status                                   |
-| `openhuman_service_uninstall`      | Uninstall service                              |
+| Command                | Purpose                                      |
+| ---------------------- | -------------------------------------------- |
+| `activate_main_window` | Focus the main window from overlays/notifications |
+| `mascot_window_show`   | Show the mascot/native window                |
+| `mascot_window_hide`   | Hide the mascot/native window                |
 
 ## Screen share picker (CEF / macOS)
 
@@ -70,14 +40,11 @@ The following **do not** exist in the current `generate_handler!` list: `exchang
 ## Example: core RPC
 
 ```typescript
-import { invoke } from "@tauri-apps/api/core";
+import { callCoreRpc } from "../services/coreRpcClient";
 
-const result = await invoke("core_rpc_relay", {
-  request: {
-    method: "your.rpc.method",
-    params: { foo: "bar" },
-    serviceManaged: false,
-  },
+const result = await callCoreRpc<MyType>({
+  method: "your.rpc.method",
+  params: { foo: "bar" },
 });
 ```
 
