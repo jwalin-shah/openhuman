@@ -2,8 +2,8 @@
 
 **Status:** Draft execution plan
 **Date:** 2026-05-11
-**Primary repo:** `/Users/jwalinshah/projects/openhuman`
-**Reference repo:** `/Users/jwalinshah/projects/inbox`
+**Primary repo:** `openhuman`
+**Reference repo:** `inbox`
 **Goal:** Turn the fork into a phone-reachable personal operator that observes work, proposes next actions, asks for approval, acts through trusted connectors, verifies outcomes, and records evidence.
 
 > **For agentic workers:** This is a planning lane artifact. Do not start broad implementation from chat context. Turn selected slices into Linear issues with acceptance criteria, branch names, owned files, validation commands, and PR handoff requirements.
