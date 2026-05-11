@@ -98,7 +98,15 @@ impl EventHandler for WebhookRequestSubscriber {
                 );
                 let decoded = decode_webhook_body(&request.body);
                 if let Err(e) = &decoded {
-                    tracing::error!("[webhook] rejecting — failed to decode body: {}", e);
+                    crate::core::observability::report_error(
+                        e.to_string().as_str(),
+                        "webhooks",
+                        "decode_body",
+                        &[
+                            ("tunnel", tunnel_uuid.as_str()),
+                            ("method", method.as_str()),
+                        ],
+                    );
                     let resp = WebhookResponseData {
                         correlation_id: correlation_id.clone(),
                         status_code: 400,
@@ -126,14 +134,27 @@ impl EventHandler for WebhookRequestSubscriber {
                         let (resp, err) = match result {
                             Ok(Ok(output)) => (build_agent_response(&corr, 200, &output), None),
                             Ok(Err(e)) => {
-                                tracing::error!("[webhook] agent trigger failed: {}", e);
+                                crate::core::observability::report_error(
+                                    e.as_str(),
+                                    "webhooks",
+                                    "agent_trigger",
+                                    &[
+                                        ("correlation_id", corr.as_str()),
+                                        ("failure", "agent_error"),
+                                    ],
+                                );
                                 (
                                     build_agent_response(&corr, 500, &format!("Agent error: {e}")),
                                     Some(e),
                                 )
                             }
                             Err(_) => {
-                                tracing::error!("[webhook] agent trigger timed out (60s)");
+                                crate::core::observability::report_error(
+                                    "agent triage timed out after 60s",
+                                    "webhooks",
+                                    "agent_trigger",
+                                    &[("correlation_id", corr.as_str()), ("failure", "timeout")],
+                                );
                                 (
                                     build_agent_response(&corr, 504, "Agent triage timed out"),
                                     Some("timed out after 60s".to_string()),
@@ -281,19 +302,27 @@ fn decode_webhook_body(base64_body: &str) -> Result<serde_json::Value, String> {
 async fn run_agent_trigger(
     envelope: &crate::openhuman::agent::triage::TriggerEnvelope,
 ) -> Result<String, String> {
-    let run = crate::openhuman::agent::triage::run_triage(envelope)
+    let outcome = crate::openhuman::agent::triage::run_triage(envelope)
         .await
         .map_err(|e| format!("triage evaluation failed: {e}"))?;
 
-    crate::openhuman::agent::triage::apply_decision(run.clone(), envelope)
-        .await
-        .map_err(|e| format!("apply_decision failed: {e}"))?;
+    match outcome {
+        crate::openhuman::agent::triage::TriageOutcome::Decision(run) => {
+            crate::openhuman::agent::triage::apply_decision(run.clone(), envelope)
+                .await
+                .map_err(|e| format!("apply_decision failed: {e}"))?;
 
-    Ok(format!(
-        "Triage decision: {} (agent: {:?})",
-        run.decision.action.as_str(),
-        run.decision.target_agent
-    ))
+            Ok(format!(
+                "Triage decision: {} (agent: {:?})",
+                run.decision.action.as_str(),
+                run.decision.target_agent
+            ))
+        }
+        crate::openhuman::agent::triage::TriageOutcome::Deferred {
+            defer_until_ms,
+            reason,
+        } => Ok(format!("Triage deferred until {defer_until_ms}: {reason}")),
+    }
 }
 
 /// Build a base64-encoded JSON response body for an agent trigger result.

@@ -1,6 +1,6 @@
 # Release Manual Smoke Checklist
 
-Run this checklist on every release-cut. Sign-off lives in the release PR description (paste the checklist with checked items + the sign-off block at the bottom). Owns OS-level surfaces that drivers cannot assert — everything else is automated under WDIO, Vitest, or Rust integration tests (see [`TESTING-STRATEGY.md`](./TESTING-STRATEGY.md)).
+Run this checklist on every release-cut. Sign-off lives in the release PR description (paste the checklist with checked items + the sign-off block at the bottom). Owns OS-level surfaces that drivers cannot assert — everything else is automated under WDIO, Vitest, or Rust integration tests (see [Testing Strategy](../gitbooks/developing/testing-strategy.md)).
 
 This is the **only** acceptable substitute for a `🚫` row in [`TEST-COVERAGE-MATRIX.md`](./TEST-COVERAGE-MATRIX.md). If a feature has neither automated coverage nor an entry on this checklist, treat it as untested and open a coverage gap.
 
@@ -29,6 +29,9 @@ Applies to every release, all platforms.
 - [ ] **Input Monitoring prompt fires on first hotkey use** — Press the registered global hotkey for the first time. Expected: `Input Monitoring` prompt; granting it makes the hotkey trigger; denying it does not crash the app.
 - [ ] **Screen Recording prompt fires on first screen-share** — Use the screen-share skill or `getDisplayMedia` shim. Expected: `Screen Recording` prompt; granted → picker shows windows + screens; denied → in-app message explaining the requirement.
 - [ ] **Microphone prompt fires on first voice capture** — Start a voice session. Expected: standard mic prompt; granted → capture begins; denied → fallback message, no panic.
+- [ ] **Bluetooth prompt fires on first Gmeet call (regression watch — see #1288)** — Open the Google Meet webview account and join a meeting from a fresh install. Expected: macOS prompts `OpenHuman would like to use Bluetooth` the first time the device picker enumerates audio peripherals; granted → AirPods/headsets appear in the picker; denied → fallback to built-in mic, no crash. Hard fail mode (key absent) is a SIGABRT before the prompt can render.
+- [ ] **Location prompt does not crash on Gmeet room-finder probe** — If Gmeet surfaces nearby-room suggestions, the first probe should trigger `OpenHuman would like to use your current location`; granting or denying must NOT crash the app. (Probe path is webview-driven; only verify the no-crash invariant here.)
+- [ ] **File picker does not crash on Documents/Downloads/Desktop selections** — From an embedded app (Slack, Discord, Telegram), trigger a file upload and pick a file from `Documents`, `Downloads`, and `Desktop` in turn. Expected: macOS prompts `OpenHuman would like to access files in your <Folder> folder` the first time per folder; deny + retry must not crash.
 
 ### Windows
 
@@ -40,6 +43,7 @@ Applies to every release, all platforms.
 
 - [ ] **`.deb` and/or `.AppImage` install on a clean Ubuntu 22.04** — `sudo dpkg -i openhuman_*.deb` or `chmod +x openhuman-*.AppImage && ./openhuman-*.AppImage`. Expected: no missing-dependency errors; app launches.
 - [ ] **OS-native notification toasts fire** — Trigger a notification from inside the app (e.g. memory captured, agent finished). Expected: a libnotify-style toast appears outside the app window. (CI Linux sees only Xvfb; this surface verifies on a real desktop.)
+- [ ] **Headless supervisor update stages without self-exit** — On a Linux service deployment with `[update] restart_strategy = "supervisor"` and `rpc_mutations_enabled = false`, stage a new core binary through the documented operator flow. Expected: the running process stays up until the supervisor restart, the staged binary is present on disk, and `systemctl restart openhuman` (or equivalent) picks up the new version.
 
 ### Cross-platform
 
@@ -55,7 +59,7 @@ Applies to every release, all platforms.
 
 ### 0.52.x — current
 
-- [ ] **OAuth gate respects `VITE_MINIMUM_SUPPORTED_APP_VERSION`** (per [`RELEASE_POLICY.md`](./RELEASE_POLICY.md)) — Set the variable to a value above this build's version, build, attempt OAuth from the older binary. Expected: gate blocks the deep link; opens `VITE_LATEST_APP_DOWNLOAD_URL`.
+- [ ] **OAuth gate respects `VITE_MINIMUM_SUPPORTED_APP_VERSION`** (per [Release Policy](../gitbooks/developing/release-policy.md)) — Set the variable to a value above this build's version, build, attempt OAuth from the older binary. Expected: gate blocks the deep link; opens `VITE_LATEST_APP_DOWNLOAD_URL`.
 - [ ] **Gmail connect succeeds on a fresh install from `releases/latest`** — Per release-policy step 4. Expected: token exchange completes, inbox lists in-app.
 
 ---

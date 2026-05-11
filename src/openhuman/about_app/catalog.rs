@@ -371,10 +371,20 @@ const CAPABILITIES: &[Capability] = &[
         name: "Connect Web3 Wallet",
         domain: "skills",
         category: CapabilityCategory::Skills,
-        description: "Connect a wallet for crypto workflows and onchain actions.",
-        how_to: "Settings > Connections",
-        status: CapabilityStatus::ComingSoon,
-        privacy: None,
+        description: "Set up local EVM, BTC, Solana, and Tron wallet identities from one recovery phrase.",
+        how_to: "Settings > Recovery Phrase or Settings > Connections",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_CREDENTIALS,
+    },
+    Capability {
+        id: "skills.wallet_execution",
+        name: "Wallet Execution Tools",
+        domain: "wallet",
+        category: CapabilityCategory::Skills,
+        description: "Read balances and prepare/confirm/execute transfers, swaps, and contract calls across the connected wallet (EVM, BTC, Solana, Tron). Quote-first; signing stays local.",
+        how_to: "Use wallet.* RPC methods (balances, prepare_transfer, prepare_swap, prepare_contract_call, execute_prepared) via the agent or core_rpc_relay.",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_CREDENTIALS,
     },
     Capability {
         id: "skills.connect_crypto_exchange",
@@ -687,6 +697,16 @@ const CAPABILITIES: &[Capability] = &[
         privacy: None,
     },
     Capability {
+        id: "channels.whatsapp_read_messages",
+        name: "Read WhatsApp Messages",
+        domain: "channels",
+        category: CapabilityCategory::Channels,
+        description: "Read and search WhatsApp Web conversations and messages after connecting WhatsApp in OpenHuman. Data is stored locally only and never transmitted.",
+        how_to: "Connect WhatsApp Web via Channels, then ask the agent to read or summarise your messages.",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_RAW,
+    },
+    Capability {
         id: "settings.configure_ai",
         name: "Configure AI",
         domain: "settings",
@@ -849,6 +869,44 @@ const CAPABILITIES: &[Capability] = &[
         privacy: None,
     },
     // ── Update ──────────────────────────────────────────────────────────────
+    // ── Meet ────────────────────────────────────────────────────────────────
+    Capability {
+        id: "meet.join_call",
+        name: "Join Google Meet Calls",
+        domain: "meet",
+        category: CapabilityCategory::Channels,
+        description: "Join a Google Meet call as an anonymous guest in a dedicated CEF webview \
+                      window with an isolated profile. The agent automatically dismisses the \
+                      device-check, types its display name, and clicks Ask-to-join via CDP; the \
+                      host admits the agent from the Meet waiting room.",
+        how_to: "Intelligence > Calls",
+        status: CapabilityStatus::Beta,
+        privacy: Some(CapabilityPrivacy {
+            leaves_device: true,
+            data_kind: PrivacyDataKind::Metadata,
+            destinations: &["Google Meet"],
+        }),
+    },
+    Capability {
+        id: "meet_agent.live_loop",
+        name: "Live Meet Agent — Listen + Speak",
+        domain: "meet_agent",
+        category: CapabilityCategory::Automation,
+        description: "While the agent is in a Google Meet call, it listens to the other \
+                      participants by tapping the embedded webview's audio output, runs \
+                      VAD-segmented speech-to-text, decides whether to respond, and speaks \
+                      back through a virtual microphone the embedded Chromium reads as if \
+                      it were a real input device. No system audio permission required — \
+                      capture and playback both stay inside the CEF process.",
+        how_to: "Automatic once a Meet call is open via Intelligence > Calls.",
+        status: CapabilityStatus::Beta,
+        privacy: Some(CapabilityPrivacy {
+            leaves_device: true,
+            data_kind: PrivacyDataKind::Derived,
+            destinations: &["Google Meet", "ElevenLabs (STT/TTS via hosted backend)"],
+        }),
+    },
+    // ── Update ──────────────────────────────────────────────────────────────
     Capability {
         id: "update.check",
         name: "Check for Core Updates",
@@ -864,7 +922,7 @@ const CAPABILITIES: &[Capability] = &[
         name: "Apply Core Update",
         domain: "update",
         category: CapabilityCategory::Settings,
-        description: "Download and stage a newer core binary, then restart the sidecar.",
+        description: "Download and stage a newer core binary. Desktop builds can self-restart; headless deployments can hand restart off to a supervisor.",
         how_to: "Settings > Developer Options > Apply Update",
         status: CapabilityStatus::Beta,
         privacy: None,

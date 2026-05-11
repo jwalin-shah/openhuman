@@ -32,6 +32,7 @@ import { loadThreads, resetThreadCachesPreservingSelection } from '../store/thre
 import { getActiveUserId, setActiveUserId } from '../store/userScopedStorage';
 import {
   openhumanUpdateAnalyticsSettings,
+  openhumanUpdateMeetSettings,
   restartApp,
   setOnboardingCompleted,
   storeSession,
@@ -66,20 +67,20 @@ interface CoreStateContextValue extends CoreState {
   refreshTeamMembers: (teamId: string) => Promise<void>;
   refreshTeamInvites: (teamId: string) => Promise<void>;
   setAnalyticsEnabled: (enabled: boolean) => Promise<void>;
+  setMeetAutoOrchestratorHandoff: (enabled: boolean) => Promise<void>;
   setOnboardingCompletedFlag: (value: boolean) => Promise<void>;
   setEncryptionKey: (value: string | null) => Promise<void>;
-  setPrimaryWalletAddress: (value: string | null) => Promise<void>;
   /**
    * Shallow-merge `patch` into `state.snapshot`. Top-level keys in `patch`
    * REPLACE the existing value — they are not deep-merged.
    *
    * This means passing a nested object (e.g. `{ localState: { encryptionKey: 'x' } }`)
-   * will CLOBBER sibling fields on that object (`primaryWalletAddress`,
-   * `onboardingTasks`). Only flat top-level fields are safe to patch directly:
+   * will CLOBBER sibling fields on that object (`onboardingTasks`). Only flat
+   * top-level fields are safe to patch directly:
    * `currentUser`, `onboardingCompleted`, `chatOnboardingCompleted`,
    * `analyticsEnabled`, `sessionToken`. For nested-object updates, use the
-   * dedicated setter (`setEncryptionKey`, `setPrimaryWalletAddress`,
-   * `setOnboardingTasks`) which preserves siblings.
+   * dedicated setter (`setEncryptionKey`, `setOnboardingTasks`) which
+   * preserves siblings.
    */
   patchSnapshot: (patch: Partial<CoreAppSnapshot>) => void;
   setOnboardingTasks: (value: CoreOnboardingTasks | null) => Promise<void>;
@@ -142,9 +143,9 @@ function normalizeSnapshot(
     onboardingCompleted: result.onboardingCompleted,
     chatOnboardingCompleted: result.chatOnboardingCompleted,
     analyticsEnabled: result.analyticsEnabled,
+    meetAutoOrchestratorHandoff: result.meetAutoOrchestratorHandoff ?? false,
     localState: {
       encryptionKey: result.localState.encryptionKey ?? null,
-      primaryWalletAddress: result.localState.primaryWalletAddress ?? null,
       onboardingTasks: result.localState.onboardingTasks ?? null,
     },
     runtime: {
@@ -479,6 +480,22 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
     [commitState, refresh]
   );
 
+  const setMeetAutoOrchestratorHandoff = useCallback(
+    async (enabled: boolean) => {
+      await openhumanUpdateMeetSettings({ auto_orchestrator_handoff: enabled });
+      // Optimistic commit so the toggle flips instantly; full snapshot
+      // refresh follows so the cached value matches what core just wrote.
+      commitState(previous => ({
+        ...previous,
+        snapshot: { ...previous.snapshot, meetAutoOrchestratorHandoff: enabled },
+      }));
+      await refresh().catch(err => {
+        log('refresh failed after setMeetAutoOrchestratorHandoff: %O', sanitizeError(err));
+      });
+    },
+    [commitState, refresh]
+  );
+
   const setOnboardingCompletedFlag = useCallback(
     async (value: boolean) => {
       await setOnboardingCompleted(value);
@@ -567,9 +584,9 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
       refreshTeamInvites,
       patchSnapshot,
       setAnalyticsEnabled,
+      setMeetAutoOrchestratorHandoff,
       setOnboardingCompletedFlag,
       setEncryptionKey: value => updateLocalState({ encryptionKey: value }),
-      setPrimaryWalletAddress: value => updateLocalState({ primaryWalletAddress: value }),
       setOnboardingTasks: value => updateLocalState({ onboardingTasks: value }),
       storeSessionToken,
       clearSession,
@@ -582,6 +599,7 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
       refreshTeams,
       patchSnapshot,
       setAnalyticsEnabled,
+      setMeetAutoOrchestratorHandoff,
       setOnboardingCompletedFlag,
       state,
       storeSessionToken,

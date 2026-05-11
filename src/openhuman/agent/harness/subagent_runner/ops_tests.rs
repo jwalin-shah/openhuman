@@ -20,10 +20,10 @@ fn make_def_named_tools(names: &[&str]) -> AgentDefinition {
         skill_filter: None,
         extra_tools: vec![],
         max_iterations: 5,
+        max_result_chars: None,
         timeout_secs: None,
         sandbox_mode: crate::openhuman::agent::harness::definition::SandboxMode::None,
         background: false,
-        uses_fork_context: false,
         subagents: vec![],
         delegate_name: None,
         source: crate::openhuman::agent::harness::definition::DefinitionSource::Builtin,
@@ -114,12 +114,26 @@ fn filter_skill_filter_combined_with_named_scope() {
 #[test]
 fn subagent_mode_as_str_roundtrip() {
     assert_eq!(SubagentMode::Typed.as_str(), "typed");
-    assert_eq!(SubagentMode::Fork.as_str(), "fork");
+}
+
+#[test]
+fn append_subagent_role_contract_adds_role_and_brevity_rules() {
+    let rendered = append_subagent_role_contract("base prompt".to_string(), "researcher");
+    assert!(rendered.contains("## Sub-agent Role Contract"));
+    assert!(rendered.contains("You are a sub-agent working for a parent OpenHuman agent"));
+    assert!(rendered.contains("Keep your final response concise and synthesis-ready"));
+}
+
+#[test]
+fn append_subagent_role_contract_is_idempotent() {
+    let once = append_subagent_role_contract("base prompt".to_string(), "researcher");
+    let twice = append_subagent_role_contract(once.clone(), "researcher");
+    assert_eq!(once, twice, "contract suffix should only appear once");
 }
 
 // ── End-to-end runner tests with mock provider ────────────────────────
 
-use crate::openhuman::agent::harness::fork_context::{with_fork_context, with_parent_context};
+use crate::openhuman::agent::harness::fork_context::with_parent_context;
 use crate::openhuman::providers::{ChatRequest as PChatRequest, ChatResponse, Provider, ToolCall};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -219,7 +233,7 @@ fn make_parent(provider: Arc<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Parent
         memory: noop_memory(),
         agent_config: crate::openhuman::config::AgentConfig::default(),
         skills: Arc::new(vec![]),
-        memory_context: None,
+        memory_context: Arc::new(None),
         session_id: "test-session".into(),
         channel: "test".into(),
         connected_integrations: vec![],
@@ -320,6 +334,38 @@ async fn typed_mode_injects_current_date_and_time_into_user_message() {
 }
 
 #[tokio::test]
+async fn typed_mode_system_prompt_includes_subagent_role_contract() {
+    let provider = ScriptedProvider::new(vec![text_response("ok")]);
+    let parent = make_parent(provider.clone(), vec![stub("file_read")]);
+    let def = make_def_named_tools(&[]);
+
+    let _ = with_parent_context(parent, async {
+        run_subagent(
+            &def,
+            "the actual task prompt",
+            SubagentRunOptions::default(),
+        )
+        .await
+    })
+    .await
+    .unwrap();
+
+    let captured = provider.captured.lock();
+    let system_msg = captured[0]
+        .messages
+        .iter()
+        .find(|m| m.role == "system")
+        .expect("system message should be present");
+    assert!(system_msg.content.contains("## Sub-agent Role Contract"));
+    assert!(system_msg
+        .content
+        .contains("You are a sub-agent working for a parent OpenHuman agent"));
+    assert!(system_msg
+        .content
+        .contains("Keep your final response concise and synthesis-ready"));
+}
+
+#[tokio::test]
 async fn typed_mode_returns_text_through_runner() {
     let provider = ScriptedProvider::new(vec![text_response("X is Y")]);
     let parent = make_parent(provider.clone(), vec![stub("file_read")]);
@@ -387,7 +433,9 @@ async fn typed_mode_no_memory_context_in_user_message() {
 async fn typed_mode_includes_memory_context_when_definition_allows_it() {
     let provider = ScriptedProvider::new(vec![text_response("ok")]);
     let mut parent = make_parent(provider.clone(), vec![stub("file_read")]);
-    parent.memory_context = Some("[Memory context]\n- prior fact: branch X failed\n".into());
+    parent.memory_context = Arc::new(Some(
+        "[Memory context]\n- prior fact: branch X failed\n".into(),
+    ));
     let mut def = make_def_named_tools(&[]);
     def.omit_memory_context = false;
 
@@ -537,76 +585,6 @@ async fn typed_mode_blocks_unallowed_tool_calls() {
 }
 
 #[tokio::test]
-async fn fork_mode_replays_parent_prefix_bytes() {
-    // Construct a fake fork context with a known message prefix.
-    // The runner should replay it byte-for-byte plus a single
-    // appended user message carrying the fork directive.
-    let provider = ScriptedProvider::new(vec![text_response("fork done")]);
-    let parent = make_parent(provider.clone(), vec![stub("file_read"), stub("shell")]);
-
-    let prefix = vec![
-        crate::openhuman::providers::ChatMessage::system("PARENT_SYSTEM_PROMPT_BYTES"),
-        crate::openhuman::providers::ChatMessage::user("first user msg"),
-        crate::openhuman::providers::ChatMessage::assistant("parent assistant"),
-    ];
-
-    let fork = ForkContext {
-        system_prompt: Arc::new("PARENT_SYSTEM_PROMPT_BYTES".into()),
-        tool_specs: Arc::new(vec![parent.all_tool_specs[0].clone()]),
-        message_prefix: Arc::new(prefix.clone()),
-        fork_task_prompt: "ANALYSE THIS BRANCH".into(),
-    };
-
-    let def = crate::openhuman::agent::harness::builtin_definitions::fork_definition();
-
-    let outcome = with_parent_context(parent, async move {
-        with_fork_context(fork, async {
-            run_subagent(
-                &def,
-                "ignored — fork uses fork_task_prompt",
-                SubagentRunOptions::default(),
-            )
-            .await
-        })
-        .await
-    })
-    .await
-    .expect("fork runner should succeed");
-
-    assert_eq!(outcome.mode, SubagentMode::Fork);
-    assert_eq!(outcome.output, "fork done");
-
-    // Verify the request that hit the provider replays the parent
-    // prefix exactly and appends only the fork directive.
-    let captured = provider.captured.lock();
-    let first_call = &captured[0];
-    assert_eq!(first_call.messages.len(), prefix.len() + 1);
-    for (i, msg) in prefix.iter().enumerate() {
-        assert_eq!(first_call.messages[i].role, msg.role);
-        assert_eq!(first_call.messages[i].content, msg.content);
-    }
-    // The appended user message carries the fork directive.
-    let appended = first_call.messages.last().unwrap();
-    assert_eq!(appended.role, "user");
-    assert_eq!(appended.content, "ANALYSE THIS BRANCH");
-    assert_eq!(first_call.tool_count, 1);
-}
-
-#[tokio::test]
-async fn fork_mode_errors_when_no_fork_context() {
-    let provider = ScriptedProvider::new(vec![text_response("unused")]);
-    let parent = make_parent(provider, vec![stub("file_read")]);
-    let def = crate::openhuman::agent::harness::builtin_definitions::fork_definition();
-
-    let result = with_parent_context(parent, async {
-        run_subagent(&def, "x", SubagentRunOptions::default()).await
-    })
-    .await;
-
-    assert!(matches!(result, Err(SubagentRunError::NoForkContext)));
-}
-
-#[tokio::test]
 async fn runner_errors_outside_parent_context() {
     let def = make_def_named_tools(&[]);
     let result = run_subagent(&def, "x", SubagentRunOptions::default()).await;
@@ -706,3 +684,6 @@ async fn typed_mode_progress_emission_is_a_noop_without_sink() {
     .expect("runner should succeed");
     assert_eq!(outcome.iterations, 1);
 }
+
+// Truncation tests live in ops_truncation_tests.rs to keep this file
+// under the ~500-line guideline.

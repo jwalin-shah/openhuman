@@ -2,25 +2,18 @@
 //! agent's runtime context (provider, tools, model, …) without widening
 //! the [`crate::openhuman::tools::Tool`] trait.
 //!
-//! Two distinct task-locals live here:
+//! [`PARENT_CONTEXT`] is set by the parent
+//! [`crate::openhuman::agent::Agent`] around its `turn` so that any tool
+//! executing inside that turn (in particular `spawn_subagent`) can read
+//! the parent's provider, tool list, and model information.
 //!
-//! 1. [`PARENT_CONTEXT`] — set by the parent [`crate::openhuman::agent::Agent`]
-//!    around its `turn` so that any tool executing inside that turn (in
-//!    particular `spawn_subagent`) can read the parent's provider, tool
-//!    list, and model information.
-//!
-//! 2. [`FORK_CONTEXT`] — set only when the parent dispatches a `fork`-mode
-//!    sub-agent. Carries the parent's *exact* rendered system prompt, tool
-//!    schemas, and message prefix so the forked child can replay the same
-//!    bytes and the inference backend's automatic prefix caching kicks in.
-//!
-//! Both contexts are stashed in `Arc`s so that cloning into the child
-//! costs a refcount bump rather than a full copy.
+//! Stashed in `Arc`s so cloning into a child costs a refcount bump
+//! rather than a full copy.
 
 use crate::openhuman::agent::progress::AgentProgress;
 use crate::openhuman::config::AgentConfig;
 use crate::openhuman::memory::Memory;
-use crate::openhuman::providers::{ChatMessage, Provider};
+use crate::openhuman::providers::Provider;
 use crate::openhuman::skills::Skill;
 use crate::openhuman::tools::{Tool, ToolSpec};
 use std::path::PathBuf;
@@ -76,7 +69,9 @@ pub struct ParentExecutionContext {
     /// Memory context loaded for the current turn. Auto-injected into
     /// subagent prompts so they have access to conversation history and
     /// skill sync data without running their own memory queries.
-    pub memory_context: Option<String>,
+    /// Wrapped in `Arc` so cloning into sub-agents is O(1) — a reference
+    /// count bump rather than a full string copy per spawn.
+    pub memory_context: Arc<Option<String>>,
 
     /// Parent's event-bus session id (for tracing & DomainEvents).
     pub session_id: String,
@@ -151,62 +146,4 @@ where
     F: std::future::Future<Output = R>,
 {
     PARENT_CONTEXT.scope(ctx, future).await
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Fork context
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Captures the parent's exact rendered prompt + tool schemas + message
-/// prefix so a forked sub-agent can replay them byte-for-byte.
-///
-/// **Why this matters**: OpenAI-compatible inference backends apply
-/// automatic prefix caching server-side based on stable byte sequences.
-/// If the forked child's request shares an identical prefix with the
-/// parent's previous request, the prefix is served from cache and only
-/// the diverging tail is billed. Forking this way is the biggest
-/// token-saving mechanism OpenHuman has for parallel sub-agent work.
-///
-/// To preserve byte stability we hold:
-/// - `system_prompt` as a pre-rendered `String` (not the builder).
-/// - `tool_specs` as already-serialised `ToolSpec` values.
-/// - `message_prefix` as the parent's `ChatMessage` history *up to and
-///   including* the assistant message that issued the `spawn_subagent`
-///   tool call.
-#[derive(Clone)]
-pub struct ForkContext {
-    /// Parent's rendered system prompt. Becomes message[0] of the child.
-    pub system_prompt: Arc<String>,
-
-    /// Parent's tool schemas. The child's `ChatRequest.tools` borrows from
-    /// this slice unchanged.
-    pub tool_specs: Arc<Vec<ToolSpec>>,
-
-    /// Parent's message history prefix that the child should replay
-    /// verbatim. Includes the system message at index 0.
-    pub message_prefix: Arc<Vec<ChatMessage>>,
-
-    /// The actual instruction the model issued for *this* fork — appears
-    /// as the new user message appended after `message_prefix`.
-    pub fork_task_prompt: String,
-}
-
-tokio::task_local! {
-    /// Fork context, scoped per `spawn_subagent { mode: "fork", … }`
-    /// invocation. The runner reads it when the requested definition has
-    /// `uses_fork_context = true`.
-    pub static FORK_CONTEXT: ForkContext;
-}
-
-/// Returns a clone of the current fork context, if one is set.
-pub fn current_fork() -> Option<ForkContext> {
-    FORK_CONTEXT.try_with(|ctx| ctx.clone()).ok()
-}
-
-/// Run `future` with `ctx` installed as the active fork context.
-pub async fn with_fork_context<F, R>(ctx: ForkContext, future: F) -> R
-where
-    F: std::future::Future<Output = R>,
-{
-    FORK_CONTEXT.scope(ctx, future).await
 }

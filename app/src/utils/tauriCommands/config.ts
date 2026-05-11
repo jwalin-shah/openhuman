@@ -64,6 +64,14 @@ export interface ScreenIntelligenceSettingsUpdate {
   denylist?: string[] | null;
 }
 
+export interface LocalAiSettingsUpdate {
+  runtime_enabled?: boolean | null;
+  usage_embeddings?: boolean | null;
+  usage_heartbeat?: boolean | null;
+  usage_learning_reflection?: boolean | null;
+  usage_subconscious?: boolean | null;
+}
+
 export interface RuntimeFlags {
   browser_allow_all: boolean;
   log_prompts: boolean;
@@ -161,6 +169,18 @@ export async function openhumanUpdateScreenIntelligenceSettings(
   });
 }
 
+export async function openhumanUpdateLocalAiSettings(
+  update: LocalAiSettingsUpdate
+): Promise<CommandResponse<ConfigSnapshot>> {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return await callCoreRpc<CommandResponse<ConfigSnapshot>>({
+    method: 'openhuman.update_local_ai_settings',
+    params: update,
+  });
+}
+
 export async function openhumanUpdateAnalyticsSettings(update: {
   enabled?: boolean;
 }): Promise<CommandResponse<ConfigSnapshot>> {
@@ -181,6 +201,62 @@ export async function openhumanGetAnalyticsSettings(): Promise<
   }
   return await callCoreRpc<CommandResponse<{ enabled: boolean }>>({
     method: 'openhuman.get_analytics_settings',
+  });
+}
+
+export async function openhumanUpdateMeetSettings(update: {
+  auto_orchestrator_handoff?: boolean;
+}): Promise<CommandResponse<ConfigSnapshot>> {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return await callCoreRpc<CommandResponse<ConfigSnapshot>>({
+    method: 'openhuman.config_update_meet_settings',
+    params: update,
+  });
+}
+
+export async function openhumanGetMeetSettings(): Promise<
+  CommandResponse<{ auto_orchestrator_handoff: boolean }>
+> {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return await callCoreRpc<CommandResponse<{ auto_orchestrator_handoff: boolean }>>({
+    method: 'openhuman.config_get_meet_settings',
+  });
+}
+
+export interface ComposioTriggerSettingsUpdate {
+  triage_disabled?: boolean | null;
+  triage_disabled_toolkits?: string[] | null;
+}
+
+export interface ComposioTriggerSettings {
+  triage_disabled: boolean;
+  triage_disabled_toolkits: string[];
+}
+
+export async function openhumanUpdateComposioTriggerSettings(
+  update: ComposioTriggerSettingsUpdate
+): Promise<CommandResponse<ConfigSnapshot>> {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return await callCoreRpc<CommandResponse<ConfigSnapshot>>({
+    method: 'openhuman.update_composio_trigger_settings',
+    params: update,
+  });
+}
+
+export async function openhumanGetComposioTriggerSettings(): Promise<
+  CommandResponse<ComposioTriggerSettings>
+> {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return await callCoreRpc<CommandResponse<ComposioTriggerSettings>>({
+    method: 'openhuman.get_composio_trigger_settings',
   });
 }
 

@@ -19,6 +19,7 @@ pub use load::{
     user_openhuman_dir, write_active_user_id, PRE_LOGIN_USER_ID,
 };
 mod local_ai;
+mod meet;
 mod node;
 mod observability;
 mod proxy;
@@ -44,7 +45,8 @@ pub use dictation::{DictationActivationMode, DictationConfig};
 pub use heartbeat_cron::{CronConfig, HeartbeatConfig};
 pub use identity_cost::{CostConfig, ModelPricing};
 pub use learning::{LearningConfig, ReflectionSource};
-pub use local_ai::LocalAiConfig;
+pub use local_ai::{LocalAiConfig, LocalAiUsage};
+pub use meet::MeetConfig;
 pub use node::NodeConfig;
 pub use observability::ObservabilityConfig;
 pub use proxy::{
@@ -64,7 +66,7 @@ pub use tools::{
     GitbooksConfig, HttpRequestConfig, IntegrationToggle, IntegrationsConfig, MultimodalConfig,
     SecretsConfig, WebSearchConfig,
 };
-pub use update::UpdateConfig;
+pub use update::{UpdateConfig, UpdateRestartStrategy};
 mod voice_server;
 pub use voice_server::{VoiceActivationMode, VoiceServerConfig};
 mod types;

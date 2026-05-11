@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use reqwest::header::AUTHORIZATION;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,9 +10,35 @@ use std::time::Duration;
 
 use super::jwt::bearer_authorization_value;
 
+const CLIENT_VERSION_HEADER_MAX_LEN: usize = 64;
+
+fn sanitize_client_version(raw: &str) -> Option<String> {
+    let sanitized: String = raw
+        .trim()
+        .chars()
+        .filter(|c| matches!(c, '0'..='9' | 'A'..='Z' | 'a'..='z' | '.' | '_' | '+' | '-'))
+        .take(CLIENT_VERSION_HEADER_MAX_LEN)
+        .collect();
+
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
+}
+
 fn build_backend_reqwest_client() -> Result<Client> {
+    let mut default_headers = HeaderMap::new();
+    if let Some(version) = sanitize_client_version(env!("CARGO_PKG_VERSION")) {
+        default_headers.insert(
+            HeaderName::from_static("x-core-version"),
+            HeaderValue::from_str(&version).context("invalid x-core-version header value")?,
+        );
+    }
+
     // Force rustls for consistent cross-platform TLS behavior.
     Client::builder()
+        .default_headers(default_headers)
         .use_rustls_tls()
         .http1_only()
         .timeout(Duration::from_secs(120))
@@ -382,14 +408,44 @@ impl BackendOAuthClient {
             request = request.json(&body);
         }
 
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("backend request {} {}", method.as_str(), url.path()))?;
+        let response = request.send().await.map_err(|e| {
+            crate::core::observability::report_error(
+                e.to_string().as_str(),
+                "backend_api",
+                "authed_json",
+                &[
+                    ("method", method.as_str()),
+                    ("path", url.path()),
+                    ("failure", "transport"),
+                ],
+            );
+            anyhow::Error::new(e).context(format!(
+                "backend request {} {}",
+                method.as_str(),
+                url.path()
+            ))
+        })?;
 
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         if !status.is_success() {
+            let status_str = status.as_u16().to_string();
+            crate::core::observability::report_error(
+                format!(
+                    "{} {} failed ({status}): {text}",
+                    method.as_str(),
+                    url.path()
+                )
+                .as_str(),
+                "backend_api",
+                "authed_json",
+                &[
+                    ("method", method.as_str()),
+                    ("path", url.path()),
+                    ("status", status_str.as_str()),
+                    ("failure", "non_2xx"),
+                ],
+            );
             anyhow::bail!(
                 "{} {} failed ({status}): {text}",
                 method.as_str(),

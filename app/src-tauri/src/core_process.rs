@@ -27,6 +27,9 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
+use tokio_util::sync::CancellationToken;
+
+use crate::process_kill::{kill_pid_force, kill_pid_term};
 
 /// Generate a 256-bit cryptographically-random bearer token as a hex string.
 ///
@@ -49,6 +52,7 @@ pub fn current_rpc_token() -> Option<String> {
 #[derive(Clone)]
 pub struct CoreProcessHandle {
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    shutdown_token: Arc<Mutex<CancellationToken>>,
     restart_lock: Arc<Mutex<()>>,
     port: u16,
     /// Bearer token the embedded server validates on every inbound request.
@@ -70,6 +74,7 @@ impl CoreProcessHandle {
         let rpc_token = generate_rpc_token();
         Self {
             task: Arc::new(Mutex::new(None)),
+            shutdown_token: Arc::new(Mutex::new(CancellationToken::new())),
             restart_lock: Arc::new(Mutex::new(())),
             port,
             rpc_token: Arc::new(rpc_token),
@@ -99,7 +104,52 @@ impl CoreProcessHandle {
     }
 
     pub async fn ensure_running(&self) -> Result<(), String> {
+        // Idempotent fast path: if we already spawned the embedded server in
+        // *this* process and it's still alive on the port, the listener is
+        // us — return Ok without identifying or taking over. Without this,
+        // a second `start_core_process` call (e.g. HMR re-mounting the boot
+        // gate) sees its own port as bound, classifies the listener as
+        // "stale OpenHuman", and walks into the SIGTERM/SIGKILL takeover
+        // path against itself. (#1130 takeover is meant to recover from
+        // *external* leftover binaries, not our own in-process spawn.)
+        {
+            let guard = self.task.lock().await;
+            if let Some(task) = guard.as_ref() {
+                if !task.is_finished() && self.is_rpc_port_open().await {
+                    log::debug!(
+                        "[core] ensure_running: embedded task already running on port {} — no-op",
+                        self.port
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         if self.is_rpc_port_open().await {
+            // Idempotent fast-path: if we already own a running embedded
+            // task, the listener on this port is us — not a stale external
+            // process. Without this short-circuit, a second `ensure_running`
+            // call (from BootCheckGate re-render, React StrictMode mount, or
+            // any double-invoke of `start_core_process`) hits the
+            // `identify_listener` path, identifies the listener as
+            // OpenHuman, calls `takeover_stale_listener`, and aborts with
+            // "stale-listener pid <self> matches the Tauri host pid;
+            // refusing to self-terminate". (#1316 introduced the
+            // frontend-driven `start_core_process` invoke without
+            // hardening `ensure_running` against double-invoke.)
+            {
+                let guard = self.task.lock().await;
+                if let Some(task) = guard.as_ref() {
+                    if !task.is_finished() {
+                        log::debug!(
+                            "[core] ensure_running: embedded task already running on port {}, returning Ok (idempotent)",
+                            self.port
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+
             if reuse_existing_listener_enabled() {
                 log::warn!(
                     "[core] OPENHUMAN_CORE_REUSE_EXISTING=1 — attaching to whatever is listening on port {} without identification (legacy behavior)",
@@ -129,6 +179,7 @@ impl CoreProcessHandle {
         }
 
         {
+            let shutdown_token = self.fresh_shutdown_token().await;
             let mut guard = self.task.lock().await;
             if guard.is_none() {
                 let port = self.port;
@@ -139,9 +190,13 @@ impl CoreProcessHandle {
                 std::env::set_var("OPENHUMAN_CORE_TOKEN", self.rpc_token.as_str());
                 log::info!("[core] spawning embedded in-process core server on port {port}");
                 let task = tokio::spawn(async move {
-                    if let Err(e) =
-                        openhuman_core::core::jsonrpc::run_server_embedded(None, Some(port), true)
-                            .await
+                    if let Err(e) = openhuman_core::core::jsonrpc::run_server_embedded(
+                        None,
+                        Some(port),
+                        true,
+                        shutdown_token,
+                    )
+                    .await
                     {
                         log::error!("[core] embedded core server exited with error: {e}");
                     } else {
@@ -330,9 +385,56 @@ impl CoreProcessHandle {
         }
     }
 
+    async fn fresh_shutdown_token(&self) -> CancellationToken {
+        let mut guard = self.shutdown_token.lock().await;
+        if guard.is_cancelled() {
+            log::debug!("[core] resetting embedded core shutdown token for new spawn");
+            *guard = CancellationToken::new();
+        }
+        guard.clone()
+    }
+
+    async fn cancel_shutdown_token(&self, log_context: &str) {
+        let token = self.shutdown_token.lock().await.clone();
+        if token.is_cancelled() {
+            log::debug!("[core] embedded core shutdown token already cancelled{log_context}");
+        } else {
+            log::info!("[core] cancelling embedded core shutdown token{log_context}");
+            token.cancel();
+        }
+    }
+
+    #[cfg(test)]
+    async fn shutdown_token_is_cancelled(&self) -> bool {
+        self.shutdown_token.lock().await.is_cancelled()
+    }
+
     /// Stop the embedded server task. Safe to call when nothing is running.
     pub async fn shutdown(&self) {
-        self.abort_task("").await;
+        self.cancel_shutdown_token("").await;
+        let task = {
+            let mut task_guard = self.task.lock().await;
+            task_guard.take()
+        };
+        let Some(mut task) = task else {
+            return;
+        };
+
+        match timeout(Duration::from_secs(5), &mut task).await {
+            Ok(Ok(())) => {
+                log::info!("[core] embedded core server task stopped gracefully");
+            }
+            Ok(Err(err)) => {
+                log::warn!("[core] embedded core server task ended during shutdown: {err}");
+            }
+            Err(_) => {
+                log::warn!(
+                    "[core] graceful embedded core shutdown timed out; aborting server task"
+                );
+                task.abort();
+                let _ = task.await;
+            }
+        }
     }
 
     /// Synchronous-friendly shutdown for `RunEvent::ExitRequested`.
@@ -342,6 +444,7 @@ impl CoreProcessHandle {
     /// and non-blocking on the UI thread — `JoinHandle::abort` returns
     /// immediately.
     pub async fn send_terminate_signal(&self) {
+        self.cancel_shutdown_token(" on app shutdown").await;
         self.abort_task(" on app shutdown").await;
     }
 }
@@ -356,7 +459,7 @@ pub fn default_core_port() -> u16 {
 /// Whether `OPENHUMAN_CORE_REUSE_EXISTING` is set to a truthy value. Opts
 /// back into the pre-#1130 behavior of attaching to whatever is listening
 /// on the port without identification — useful for manual harnesses.
-fn reuse_existing_listener_enabled() -> bool {
+pub(crate) fn reuse_existing_listener_enabled() -> bool {
     std::env::var("OPENHUMAN_CORE_REUSE_EXISTING")
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
@@ -459,8 +562,11 @@ fn find_pid_on_port(port: u16) -> Option<u32> {
 
 #[cfg(windows)]
 fn find_pid_on_port(port: u16) -> Option<u32> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("netstat")
         .args(["-ano", "-p", "TCP"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -496,70 +602,6 @@ fn parse_netstat_pid(stdout: &str, port: u16) -> Option<u32> {
         }
     }
     None
-}
-
-/// Send the graceful-shutdown signal to `pid`. Returns `Ok` if the process
-/// exited cleanly, was already gone, or accepted the signal. Callers must
-/// re-check ownership of the resource (e.g. that the same pid is still bound
-/// to the port) before escalating to `kill_pid_force` — see the PID-reuse
-/// hazard discussed on #1166.
-#[cfg(unix)]
-fn kill_pid_term(pid: u32) -> Result<(), String> {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    let target = Pid::from_raw(pid as i32);
-    if let Err(e) = kill(target, Signal::SIGTERM) {
-        // ESRCH means already gone — treat as success.
-        if e != nix::errno::Errno::ESRCH {
-            return Err(format!("SIGTERM pid {pid}: {e}"));
-        }
-    }
-    Ok(())
-}
-
-/// Force-kill `pid` after `kill_pid_term` failed to free the resource. Caller
-/// is responsible for revalidating that `pid` still owns the resource we're
-/// trying to free — see `takeover_stale_listener` for the revalidation step.
-#[cfg(unix)]
-fn kill_pid_force(pid: u32) -> Result<(), String> {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    let target = Pid::from_raw(pid as i32);
-    match kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
-        Ok(()) => Ok(()),
-        // ESRCH means the process exited between our re-validation and the
-        // SIGKILL — the resource is freeing on its own, treat as success.
-        Err(e) if e == nix::errno::Errno::ESRCH => {
-            let _ = target;
-            Ok(())
-        }
-        Err(e) => Err(format!("SIGKILL pid {pid}: {e}")),
-    }
-}
-
-/// Windows has no graceful equivalent for a windowless RPC server — `taskkill`
-/// without `/F` only delivers `WM_CLOSE` to GUI apps. Send the WM_CLOSE first
-/// (best-effort) so console subprocesses can run shutdown handlers; the
-/// follow-up `kill_pid_force` does the actual termination.
-#[cfg(windows)]
-fn kill_pid_term(pid: u32) -> Result<(), String> {
-    // Best-effort — ignore non-zero exit (e.g. process is windowless).
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string()])
-        .status();
-    Ok(())
-}
-
-#[cfg(windows)]
-fn kill_pid_force(pid: u32) -> Result<(), String> {
-    let status = std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status()
-        .map_err(|e| format!("taskkill spawn: {e}"))?;
-    if !status.success() {
-        return Err(format!("taskkill exited with {status}"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

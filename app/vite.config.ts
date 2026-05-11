@@ -84,6 +84,15 @@ function guardCefRelListSupportsPlugin(): PluginOption {
   };
 }
 
+// `VITE_OPENHUMAN_TARGET=web` switches the build to the browser-hosted
+// flavor: output lands in `dist-web/` so the desktop build artifact in
+// `dist/` (consumed by `cargo tauri build`) is never clobbered, and the
+// `import.meta.env.VITE_OPENHUMAN_TARGET` value is exposed to runtime code
+// that wants a build-time signal in addition to the runtime `isTauri()`
+// check. Default (`undefined` / `desktop`) keeps the historical behavior.
+const buildTarget = (process.env.VITE_OPENHUMAN_TARGET ?? "desktop").trim();
+const isWebTarget = buildTarget === "web";
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   root: "src",
@@ -98,7 +107,7 @@ export default defineConfig(async () => ({
   // the shell exports staging URLs.
   envDir: resolve(__dirname, ".."),
   build: {
-    outDir: "../dist",
+    outDir: isWebTarget ? "../dist-web" : "../dist",
     emptyOutDir: true,
     // Desktop CEF has surfaced a runtime where `link.relList.supports` is
     // truthy but not callable. Vite calls it both in the modulepreload
@@ -131,7 +140,20 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // `false` lets Vite pick its own loopback default; on Windows that lands
+    // on `::1` only, leaving 127.0.0.1 unbound. The Tauri dev-server proxy
+    // (vendored tauri-cef, reqwest under the hood) resolves `localhost` and
+    // can pick either stack — when it picks 127.0.0.1 the request fails,
+    // which surfaces as a blank webview / white screen because the SPA
+    // bundle never loads. `true` maps to `server.listen('0.0.0.0')` in Vite,
+    // binding **every network adapter** (loopback + LAN) so whichever stack
+    // reqwest's DNS picks for `localhost` has a listener. Side effect: the
+    // dev HMR websocket and bundled sources are reachable from other
+    // machines on the same network — fine for `tauri dev`, but on a shared
+    // or corporate Wi-Fi consider overriding with `host: 'localhost'` (and
+    // accepting the dual-stack hazard) instead. Production builds are
+    // unaffected.
+    host: host || true,
     allowedHosts: [
       "frontend-runner-openhuman-git-main-vezuresxyz.vercel.app",
     ],

@@ -12,7 +12,11 @@ import { renderWithProviders } from '../../../../test/test-utils';
 const hoisted = vi.hoisted(() => ({
   trigger: vi.fn(),
   appEnvironment: 'staging' as 'staging' | 'production' | 'development',
+  invoke: vi.fn(),
+  isTauri: vi.fn(() => true),
 }));
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: hoisted.invoke, isTauri: hoisted.isTauri }));
 
 vi.mock('../../../../services/analytics', () => ({ triggerSentryTestEvent: hoisted.trigger }));
 
@@ -35,9 +39,68 @@ async function importPanel() {
   return mod.default;
 }
 
+describe('DeveloperOptionsPanel — CoreModeBadge', () => {
+  beforeEach(() => {
+    hoisted.invoke.mockReset();
+    hoisted.invoke.mockResolvedValue(null);
+    hoisted.isTauri.mockReset();
+    hoisted.isTauri.mockReturnValue(true);
+    hoisted.appEnvironment = 'production';
+  });
+
+  test('shows "Local" pill when coreMode is local', async () => {
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />, { preloadedState: { coreMode: { mode: { kind: 'local' } } } });
+    expect(screen.getByText('Local')).toBeInTheDocument();
+    expect(screen.getByText(/Embedded core sidecar/i)).toBeInTheDocument();
+  });
+
+  test('shows "Cloud" pill plus URL and masked token tail when coreMode is cloud', async () => {
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />, {
+      preloadedState: {
+        coreMode: {
+          mode: { kind: 'cloud', url: 'https://core.example.com/rpc', token: 'abc1234' },
+        },
+      },
+    });
+    expect(screen.getByText('Cloud')).toBeInTheDocument();
+    expect(screen.getByText('https://core.example.com/rpc')).toBeInTheDocument();
+    expect(screen.getByText('••••••1234')).toBeInTheDocument();
+  });
+
+  test('flags missing token in cloud mode', async () => {
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />, {
+      preloadedState: {
+        coreMode: { mode: { kind: 'cloud', url: 'https://core.example.com/rpc' } },
+      },
+    });
+    expect(screen.getByText(/not set — RPC will 401/i)).toBeInTheDocument();
+  });
+
+  test('shows "not set" warning when coreMode is unset', async () => {
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />, { preloadedState: { coreMode: { mode: { kind: 'unset' } } } });
+    expect(screen.getByText(/Core mode: not set/i)).toBeInTheDocument();
+  });
+});
+
 describe('DeveloperOptionsPanel — Sentry test row', () => {
   beforeEach(() => {
     hoisted.trigger.mockReset();
+    // The panel always renders LogsFolderRow, which fires
+    // `invoke('logs_folder_path')` on mount. Stub it to a resolved no-op
+    // so this suite's tests focus on the Sentry row without unhandled
+    // rejections from the App-logs effect.
+    hoisted.invoke.mockReset();
+    hoisted.invoke.mockResolvedValue(null);
+    hoisted.isTauri.mockReset();
+    hoisted.isTauri.mockReturnValue(true);
     hoisted.appEnvironment = 'staging';
   });
 
@@ -101,6 +164,92 @@ describe('DeveloperOptionsPanel — Sentry test row', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Failed: network broke/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('DeveloperOptionsPanel — App logs row', () => {
+  beforeEach(() => {
+    hoisted.invoke.mockReset();
+    hoisted.isTauri.mockReset();
+    hoisted.isTauri.mockReturnValue(true);
+    // Force production so the staging Sentry row stays hidden and we
+    // assert against the App logs row in isolation.
+    hoisted.appEnvironment = 'production';
+  });
+
+  test('renders nothing when not running under Tauri', async () => {
+    hoisted.isTauri.mockReturnValue(false);
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />);
+    expect(screen.queryByText(/App logs/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Open logs folder/i })).toBeNull();
+  });
+
+  test('shows the resolved log path on mount', async () => {
+    hoisted.invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'logs_folder_path') return Promise.resolve('/tmp/openhuman/logs');
+      return Promise.resolve();
+    });
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('/tmp/openhuman/logs')).toBeInTheDocument();
+    });
+    expect(hoisted.invoke).toHaveBeenCalledWith('logs_folder_path');
+  });
+
+  test('invokes reveal_logs_folder on click', async () => {
+    hoisted.invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'logs_folder_path') return Promise.resolve(null);
+      if (cmd === 'reveal_logs_folder') return Promise.resolve();
+      return Promise.resolve();
+    });
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Open logs folder/i }));
+
+    await waitFor(() => {
+      expect(hoisted.invoke).toHaveBeenCalledWith('reveal_logs_folder');
+    });
+  });
+
+  test('surfaces the reveal error message in the live region', async () => {
+    hoisted.invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'logs_folder_path') return Promise.resolve(null);
+      if (cmd === 'reveal_logs_folder')
+        return Promise.reject(new Error('log directory not initialized'));
+      return Promise.resolve();
+    });
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Open logs folder/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/log directory not initialized/i)).toBeInTheDocument();
+    });
+    const live = screen.getByRole('status');
+    expect(live).toHaveAttribute('aria-live', 'polite');
+  });
+
+  test('surfaces the path-resolve error when logs_folder_path rejects', async () => {
+    hoisted.invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'logs_folder_path') return Promise.reject(new Error('boom'));
+      return Promise.resolve();
+    });
+    vi.resetModules();
+    const Panel = await importPanel();
+    renderWithProviders(<Panel />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/boom/i)).toBeInTheDocument();
     });
   });
 });

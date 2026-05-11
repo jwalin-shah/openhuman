@@ -24,32 +24,52 @@ use chrono::{DateTime, Utc};
 
 use crate::openhuman::memory::tree::util::redact::redact;
 
-/// Which kind of summary tree a summary belongs to. Determines the top-level
-/// directory under `<content_root>/summaries/`.
+/// Which kind of summary tree a summary belongs to. Determines the
+/// folder name under `<content_root>/wiki/summaries/` — flattened
+/// from the original `<kind>/<scope_slug>/...` two-level layout to a
+/// single dash-joined `<kind>-<scope_slug>/...` folder so the
+/// Obsidian sidebar listing stays readable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SummaryTreeKind {
-    /// Per-source-tree summary. Layout: `summaries/source/<scope_slug>/L<level>/<id>.md`
+    /// Per-source-tree summary. Layout: `wiki/summaries/source-<scope_slug>/L<level>/<id>.md`
     Source,
-    /// Global digest tree. Layout: `summaries/global/<yyyy-mm-dd>/L<level>/<id>.md`
+    /// Global digest tree. Layout: `wiki/summaries/global-<yyyy-mm-dd>/L<level>/<id>.md`
     Global,
-    /// Per-topic (entity) tree. Layout: `summaries/topic/<scope_slug>/L<level>/<id>.md`
+    /// Per-topic (entity) tree. Layout: `wiki/summaries/topic-<scope_slug>/L<level>/<id>.md`
     Topic,
 }
 
+/// Top-level directory for derived/wiki content (summaries today,
+/// contacts and other knowledge-graph notes later). The two-tier
+/// `<content_root>/raw/` (verbatim source bytes) +
+/// `<content_root>/wiki/` (processed, human-facing) split lets users
+/// keep one tidy Obsidian vault rooted at `<content_root>` without
+/// chunked intermediates polluting the listing.
+pub const WIKI_PREFIX: &str = "wiki";
+
 /// Build the relative content path for a summary, using forward slashes.
 ///
-/// Path layout depends on tree_kind:
-/// - Source: `"summaries/source/<scope_slug>/L<level>/<summary_filename>.md"`
-/// - Global: `"summaries/global/<yyyy-mm-dd>/L<level>/<summary_filename>.md"`
+/// Path layout depends on tree_kind. Folder name is `<kind>-<scope>` —
+/// flattening the historical two-level `<kind>/<scope>/` so users see
+/// one folder per logical source in their Obsidian sidebar:
+/// - Source: `"wiki/summaries/source-<scope_slug>/L<level>/<summary_filename>.md"`
+/// - Global: `"wiki/summaries/global-<yyyy-mm-dd>/L<level>/<summary_filename>.md"`
 ///   Falls back to `unknown-date` (with a warn log) if `date_for_global` is
 ///   `None` — preferable to panicking inside a path utility.
-/// - Topic:  `"summaries/topic/<scope_slug>/L<level>/<summary_filename>.md"`
+/// - Topic:  `"wiki/summaries/topic-<scope_slug>/L<level>/<summary_filename>.md"`
 ///
 /// `scope_slug` must already be slugified by the caller (use [`slugify_source_id`] or
 /// a per-kind variant). A trailing `.md` on `summary_id` is stripped if present.
 ///
-/// The `summary_id` is sanitized into a filesystem-safe filename by replacing
-/// characters illegal on Windows (`:`, `\`, `*`, `?`, `"`, `<`, `>`, `|`) with `-`.
+/// New summaries use the explicit basename contract implemented by
+/// [`summary_filename`]:
+/// - current canonical ids: `summary:{13-digit-ms}:L{level}-{tail}`
+///   → `summary-{13-digit-ms}-L{level}-{tail}.md`
+/// - legacy ids: `summary:L{level}:{rest}`
+///   → `summary-L{level}-{rest}.md`
+///
+/// Unknown / malformed ids fall back to [`sanitize_filename`] so existing vaults
+/// remain readable even if they contain older experimental shapes.
 pub fn summary_rel_path(
     tree_kind: SummaryTreeKind,
     scope_slug: &str,
@@ -57,21 +77,16 @@ pub fn summary_rel_path(
     summary_id: &str,
     date_for_global: Option<DateTime<Utc>>,
 ) -> String {
-    // Strip a trailing `.md` from summary_id if accidentally included.
-    let id = summary_id.strip_suffix(".md").unwrap_or(summary_id);
-    // Sanitize to a cross-platform filename (colons are illegal on Windows NTFS).
-    let filename = sanitize_filename(id);
+    let filename = summary_filename(summary_id);
 
     match tree_kind {
         SummaryTreeKind::Source => {
-            format!("summaries/source/{}/L{}/{}.md", scope_slug, level, filename)
+            format!(
+                "{WIKI_PREFIX}/summaries/source-{}/L{}/{}.md",
+                scope_slug, level, filename
+            )
         }
         SummaryTreeKind::Global => {
-            // Fall back to a sentinel date rather than panic — a path-utility
-            // panic would propagate up through seal/digest/janitor codepaths
-            // and abort otherwise-recoverable work. Callers should always
-            // pass a date for Global; the warn log surfaces the contract
-            // violation without taking the process down.
             let date_str = match date_for_global {
                 Some(d) => d.format("%Y-%m-%d").to_string(),
                 None => {
@@ -83,12 +98,72 @@ pub fn summary_rel_path(
                     "unknown-date".to_string()
                 }
             };
-            format!("summaries/global/{}/L{}/{}.md", date_str, level, filename)
+            format!(
+                "{WIKI_PREFIX}/summaries/global-{}/L{}/{}.md",
+                date_str, level, filename
+            )
         }
         SummaryTreeKind::Topic => {
-            format!("summaries/topic/{}/L{}/{}.md", scope_slug, level, filename)
+            format!(
+                "{WIKI_PREFIX}/summaries/topic-{}/L{}/{}.md",
+                scope_slug, level, filename
+            )
         }
     }
+}
+
+/// Convert a summary id into the canonical on-disk basename stem (without
+/// `.md`).
+///
+/// This keeps summary filenames independent from the generic "replace illegal
+/// characters" fallback so new writes follow one documented convention, while
+/// legacy ids still map to their historical names.
+pub(crate) fn summary_filename(summary_id: &str) -> String {
+    let id = summary_id.strip_suffix(".md").unwrap_or(summary_id);
+
+    if let Some(rest) = id.strip_prefix("summary:") {
+        if let Some((ms, suffix)) = rest.split_once(':') {
+            // Canonical fast-path: only accept ms-first ids whose
+            // `L<level>-<tail>` suffix has a numeric level and a tail
+            // free of filesystem-illegal characters. Without the tail
+            // check a malformed canonical-looking id like
+            // `summary:1700000000000:L2-a/b` would smuggle a `/` into
+            // the basename and split the file across multiple path
+            // components when joined onto the L<level>/ directory.
+            if let Some((level, tail)) = suffix.split_once('-') {
+                let level_is_numeric = level.starts_with('L')
+                    && level.len() > 1
+                    && level[1..].chars().all(|c| c.is_ascii_digit());
+                let tail_is_safe = !tail.is_empty()
+                    && !tail
+                        .chars()
+                        .any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'));
+                if ms.len() == 13
+                    && ms.chars().all(|c| c.is_ascii_digit())
+                    && level_is_numeric
+                    && tail_is_safe
+                {
+                    return format!("summary-{ms}-{level}-{tail}");
+                }
+            }
+        }
+
+        if let Some((level, tail)) = rest.split_once(':') {
+            // Legacy ms-less ids (`summary:L<n>:<rest>`). Require strict
+            // `L<digits>` for the level segment so a malicious input
+            // like `summary:L1/2:abc` or `summary:L../../x:tail` cannot
+            // inject `/` into the returned basename. Anything else
+            // falls through to the generic sanitiser below.
+            let level_is_numeric = level.starts_with('L')
+                && level.len() > 1
+                && level[1..].chars().all(|c| c.is_ascii_digit());
+            if level_is_numeric && !tail.is_empty() {
+                return format!("summary-{level}-{}", sanitize_filename(tail));
+            }
+        }
+    }
+
+    sanitize_filename(id)
 }
 
 /// Replace characters that are illegal in filenames on Windows NTFS with `-`.
@@ -99,8 +174,10 @@ pub fn summary_rel_path(
 ///
 /// Exposed at crate scope so [`super::compose`] can convert structured IDs
 /// like `summary:L1:UUID` into the basename used by [`summary_rel_path`]
-/// (`summary-L1-UUID`) when emitting Obsidian wikilinks. This keeps a single
-/// source of truth for the id→filename mapping.
+/// when no summary-specific mapping applies. Summary ids should prefer
+/// [`summary_filename`] so new writes follow the documented basename
+/// contract instead of relying on punctuation replacement as an accident of
+/// the implementation.
 pub(crate) fn sanitize_filename(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -403,7 +480,22 @@ mod tests {
         // Colons in summary_id are replaced with '-' for cross-platform filenames.
         assert_eq!(
             p,
-            "summaries/source/gmail-alice-x-com-bob-y-com/L1/summary-L1-abc.md"
+            "wiki/summaries/source-gmail-alice-x-com-bob-y-com/L1/summary-L1-abc.md"
+        );
+    }
+
+    #[test]
+    fn summary_rel_path_current_ids_keep_time_first_basename() {
+        let p = summary_rel_path(
+            SummaryTreeKind::Source,
+            "slack-eng",
+            2,
+            "summary:1700000000000:L2-deadbeef",
+            None,
+        );
+        assert_eq!(
+            p,
+            "wiki/summaries/source-slack-eng/L2/summary-1700000000000-L2-deadbeef.md"
         );
     }
 
@@ -418,7 +510,7 @@ mod tests {
             "summary:L0:daily",
             Some(date),
         );
-        assert_eq!(p, "summaries/global/2026-04-28/L0/summary-L0-daily.md");
+        assert_eq!(p, "wiki/summaries/global-2026-04-28/L0/summary-L0-daily.md");
     }
 
     #[test]
@@ -432,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             p,
-            "summaries/topic/person-alex-johnson/L1/summary-L1-xyz.md"
+            "wiki/summaries/topic-person-alex-johnson/L1/summary-L1-xyz.md"
         );
     }
 
@@ -446,7 +538,77 @@ mod tests {
             "summary:L2:foo.md",
             None,
         );
-        assert_eq!(p, "summaries/topic/entity-slug/L2/summary-L2-foo.md");
+        assert_eq!(p, "wiki/summaries/topic-entity-slug/L2/summary-L2-foo.md");
+    }
+
+    #[test]
+    fn summary_filename_preserves_legacy_level_first_shape() {
+        assert_eq!(
+            summary_filename("summary:L3:legacy-uuid"),
+            "summary-L3-legacy-uuid"
+        );
+    }
+
+    #[test]
+    fn summary_filename_rejects_canonical_shape_with_path_separators() {
+        // A canonical-looking id whose tail contains `/` must NOT be
+        // returned verbatim — that would smuggle a directory separator
+        // into the basename. Fall back to the generic sanitiser so the
+        // illegal char is replaced with `-`.
+        let basename = summary_filename("summary:1700000000000:L2-a/b");
+        assert!(
+            !basename.contains('/'),
+            "basename must not contain a path separator; got {basename}"
+        );
+        // Generic-fallback shape: sanitize_filename replaces both `:` and `/`.
+        assert_eq!(basename, "summary-1700000000000-L2-a-b");
+    }
+
+    #[test]
+    fn summary_filename_rejects_canonical_shape_with_non_numeric_level() {
+        // Level segment must be `L<digits>`. Anything else (`Lxyz`,
+        // `L-1`, …) is not the canonical contract — fall back to the
+        // generic sanitiser instead of accepting verbatim.
+        let basename = summary_filename("summary:1700000000000:Lxyz-tail");
+        assert_eq!(basename, "summary-1700000000000-Lxyz-tail");
+    }
+
+    #[test]
+    fn summary_filename_legacy_branch_rejects_path_separator_in_level() {
+        // Legacy `summary:L<n>:<rest>` branch must also enforce strict
+        // `L<digits>` for the level segment — otherwise an input like
+        // `summary:L1/2:abc` would produce `summary-L1/2-abc` and
+        // smuggle a `/` into the basename. Falls through to the
+        // generic sanitiser, which replaces `/` with `-`.
+        let basename = summary_filename("summary:L1/2:abc");
+        assert!(
+            !basename.contains('/'),
+            "basename must not contain a path separator; got {basename}"
+        );
+        assert_eq!(basename, "summary-L1-2-abc");
+    }
+
+    #[test]
+    fn summary_filename_legacy_branch_rejects_traversal_in_level() {
+        // `summary:L../../x:tail` must NOT produce
+        // `summary-L../../x-tail` — the legacy branch requires
+        // `L<digits>` and falls through to `sanitize_filename` when
+        // the level segment is non-numeric. Without `/` in the
+        // resulting basename the dots are inert characters, not
+        // directory components.
+        let basename = summary_filename("summary:L../../x:tail");
+        assert!(
+            !basename.contains('/'),
+            "basename must not contain a path separator; got {basename}"
+        );
+    }
+
+    #[test]
+    fn summary_filename_falls_back_for_unknown_shapes() {
+        assert_eq!(
+            summary_filename("summary:experimental:value:tail"),
+            "summary-experimental-value-tail"
+        );
     }
 
     #[test]
@@ -455,7 +617,7 @@ mod tests {
         // panic — fall back to a sentinel `unknown-date` segment so the
         // file lands somewhere predictable rather than aborting the seal.
         let p = summary_rel_path(SummaryTreeKind::Global, "global", 0, "summary:L0:x", None);
-        assert_eq!(p, "summaries/global/unknown-date/L0/summary-L0-x.md");
+        assert_eq!(p, "wiki/summaries/global-unknown-date/L0/summary-L0-x.md");
     }
 
     #[test]

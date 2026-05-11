@@ -48,7 +48,7 @@ Canonical mapping of every product feature to its test source(s). Drives gap-fil
 
 | ID    | Feature                       | Layer | Test path(s)                                       | Status | Notes                                 |
 | ----- | ----------------------------- | ----- | -------------------------------------------------- | ------ | ------------------------------------- |
-| 0.3.1 | Auto Update Check             | RU+MS | `src/openhuman/update/` (Rust unit), release smoke | 🟡     | Core check covered; UI prompt manual  |
+| 0.3.1 | Auto Update Check             | RU+RI+MS | `src/openhuman/update/` (Rust unit), `tests/json_rpc_e2e.rs`, release smoke | 🟡     | Core check/update policy covered; desktop prompt + release upgrade still manual |
 | 0.3.2 | Forced Update Handling        | MS    | release-manual-smoke                               | 🚫     | End-to-end gating verified at release |
 | 0.3.3 | Reinstall with Existing State | MS    | release-manual-smoke                               | 🚫     | Workspace persistence on reinstall    |
 | 0.3.4 | Clean Uninstall               | MS    | release-manual-smoke                               | 🚫     | OS removal paths                      |
@@ -327,7 +327,8 @@ Canonical mapping of every product feature to its test source(s). Drives gap-fil
 | ------ | ------------------------- | ----- | ----------------------------------------------------- | ------ | ----- |
 | 10.3.1 | Incoming Message Sync     | RU+WD | `src/openhuman/channels/tests/`, `gmail-flow.spec.ts` | ✅     |       |
 | 10.3.2 | Message Deduplication     | RU    | `src/openhuman/channels/tests/`                       | ✅     |       |
-| 10.3.3 | Real-Time vs Delayed Sync | RU    | `src/openhuman/channels/tests/runtime_dispatch.rs`    | ✅     |       |
+| 10.3.3 | WhatsApp Agent Retrieval  | RU    | `src/openhuman/tools/impl/whatsapp_data/` (this PR), `tests/json_rpc_e2e.rs::whatsapp_data_agent_tools_e2e_1341` (this PR) | ✅     | Three read-only agent tools wrap the local SQLite store; ingest stays internal-only. See [`docs/whatsapp-data-flow.md`](whatsapp-data-flow.md). |
+| 10.3.4 | Real-Time vs Delayed Sync | RU    | `src/openhuman/channels/tests/runtime_dispatch.rs`    | ✅     |       |
 
 ### 10.4 Messaging Operations
 
@@ -422,33 +423,33 @@ Canonical mapping of every product feature to its test source(s). Drives gap-fil
 
 ### 13.2 Automation & Channels
 
-| ID     | Feature               | Layer | Test path(s)             | Status | Notes |
-| ------ | --------------------- | ----- | ------------------------ | ------ | ----- |
-| 13.2.1 | Channel Configuration | WD    | _missing_ — tracked #969 | ❌     |       |
-| 13.2.2 | Permission Settings   | WD    | _missing_ — tracked #969 | ❌     |       |
+| ID     | Feature               | Layer | Test path(s)                                                | Status | Notes |
+| ------ | --------------------- | ----- | ----------------------------------------------------------- | ------ | ----- |
+| 13.2.1 | Channel Configuration | WD    | `app/test/e2e/specs/settings-channels-permissions.spec.ts`  | ✅     |       |
+| 13.2.2 | Permission Settings   | WD    | `app/test/e2e/specs/settings-channels-permissions.spec.ts`  | ✅     |       |
 
 ### 13.3 AI & Skills
 
-| ID     | Feature             | Layer | Test path(s)                                                              | Status | Notes                               |
-| ------ | ------------------- | ----- | ------------------------------------------------------------------------- | ------ | ----------------------------------- |
-| 13.3.1 | Model Configuration | VU    | `app/src/components/settings/panels/__tests__/AutocompletePanel.test.tsx` | 🟡     | Generic; AI-model-switch unasserted |
-| 13.3.2 | Skill Toggle        | WD    | `skill-lifecycle.spec.ts`                                                 | ✅     |                                     |
+| ID     | Feature             | Layer | Test path(s)                                                                                                              | Status | Notes                               |
+| ------ | ------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------- |
+| 13.3.1 | Model Configuration | VU+WD | `app/src/components/settings/panels/__tests__/AutocompletePanel.test.tsx`, `app/test/e2e/specs/settings-ai-skills.spec.ts` | ✅     | AI-model-switch covered             |
+| 13.3.2 | Skill Toggle        | WD    | `skill-lifecycle.spec.ts`, `app/test/e2e/specs/settings-ai-skills.spec.ts`                                                 | ✅     |                                     |
 
 ### 13.4 Developer Options
 
-| ID     | Feature            | Layer | Test path(s)             | Status | Notes                          |
-| ------ | ------------------ | ----- | ------------------------ | ------ | ------------------------------ |
-| 13.4.1 | Webhook Inspection | WD    | _missing_ — tracked #969 | ❌     |                                |
-| 13.4.2 | Runtime Logs       | WD    | _missing_ — tracked #969 | ❌     |                                |
-| 13.4.3 | Memory Debug       | WD    | _missing_ — tracked #969 | ❌     | Panel exists; assertion needed |
+| ID     | Feature            | Layer | Test path(s)                                         | Status | Notes |
+| ------ | ------------------ | ----- | ---------------------------------------------------- | ------ | ----- |
+| 13.4.1 | Webhook Inspection | WD    | `app/test/e2e/specs/settings-dev-options.spec.ts`    | ✅     |       |
+| 13.4.2 | Runtime Logs       | WD    | `app/test/e2e/specs/settings-dev-options.spec.ts`    | ✅     |       |
+| 13.4.3 | Memory Debug       | WD    | `app/test/e2e/specs/settings-dev-options.spec.ts`    | ✅     |       |
 
 ### 13.5 Data Management
 
-| ID     | Feature          | Layer | Test path(s)             | Status | Notes                                  |
-| ------ | ---------------- | ----- | ------------------------ | ------ | -------------------------------------- |
-| 13.5.1 | Clear App Data   | WD    | _missing_ — tracked #969 | ❌     | Destructive — confirm-then-reset       |
-| 13.5.2 | Cache Reset      | WD    | _missing_ — tracked #969 | ❌     |                                        |
-| 13.5.3 | Full State Reset | WD    | _missing_ — tracked #969 | ❌     | Restart-and-verify fresh-install state |
+| ID     | Feature          | Layer | Test path(s)                                            | Status | Notes                                  |
+| ------ | ---------------- | ----- | ------------------------------------------------------- | ------ | -------------------------------------- |
+| 13.5.1 | Clear App Data   | WD    | `app/test/e2e/specs/settings-data-management.spec.ts`   | ✅     | Destructive — confirm-then-reset       |
+| 13.5.2 | Cache Reset      | WD    | `app/test/e2e/specs/settings-data-management.spec.ts`   | ✅     |                                        |
+| 13.5.3 | Full State Reset | WD    | `app/test/e2e/specs/settings-data-management.spec.ts`   | ✅     | Restart-and-verify fresh-install state |
 
 ---
 

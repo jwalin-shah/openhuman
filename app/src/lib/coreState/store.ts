@@ -16,7 +16,6 @@ export interface CoreOnboardingTasks {
 
 export interface CoreLocalState {
   encryptionKey: string | null;
-  primaryWalletAddress: string | null;
   onboardingTasks: CoreOnboardingTasks | null;
 }
 
@@ -46,6 +45,16 @@ export interface CoreAppSnapshot {
    */
   chatOnboardingCompleted: boolean;
   analyticsEnabled: boolean;
+  /**
+   * Whether ending a Google Meet call hands the transcript to the
+   * orchestrator agent for proactive follow-up actions (drafting Slack
+   * messages, scheduling, etc.). Mirrors
+   * `Config::meet.auto_orchestrator_handoff` in the Rust core (see
+   * `src/openhuman/config/schema/meet.rs`). Defaults to `false` —
+   * privacy-conservative gate added in #1299. The webview meet flow
+   * reads this before invoking `handoffToOrchestrator`.
+   */
+  meetAutoOrchestratorHandoff: boolean;
   localState: CoreLocalState;
   runtime: CoreRuntimeSnapshot;
 }
@@ -66,7 +75,8 @@ const emptySnapshot: CoreAppSnapshot = {
   onboardingCompleted: false,
   chatOnboardingCompleted: false,
   analyticsEnabled: false,
-  localState: { encryptionKey: null, primaryWalletAddress: null, onboardingTasks: null },
+  meetAutoOrchestratorHandoff: false,
+  localState: { encryptionKey: null, onboardingTasks: null },
   runtime: { screenIntelligence: null, localAi: null, autocomplete: null, service: null },
 };
 

@@ -14,7 +14,7 @@
  *    "Restart to apply" prompt — never a "click to start downloading" one
  *
  * Pairs with the Rust side in `app/src-tauri/src/lib.rs` (`check_app_update`,
- * `download_app_update`, `install_app_update`). See `docs/AUTO_UPDATE.md`.
+ * `download_app_update`, `install_app_update`). See `gitbooks/overview/auto-update.md`.
  */
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -53,10 +53,10 @@ export interface UseAppUpdateOptions {
    * Default: true. Skipped when `isTauri()` is false.
    */
   autoCheck?: boolean;
-  /** Delay before the first auto-check fires, in ms. Default: 30_000. */
+  /** Delay before the first auto-check fires, in ms. Default: 5_000. */
   initialCheckDelayMs?: number;
   /**
-   * Repeat interval between background checks, in ms. Default: 4 * 60 * 60 * 1000.
+   * Repeat interval between background checks, in ms. Default: 15 * 60 * 1000.
    * Set to 0 (or a negative number) to disable repeating.
    */
   recheckIntervalMs?: number;
@@ -101,8 +101,8 @@ export interface UseAppUpdateResult {
   reset: () => void;
 }
 
-const DEFAULT_INITIAL_DELAY_MS = 30_000;
-const DEFAULT_RECHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4h
+const DEFAULT_INITIAL_DELAY_MS = 5_000;
+const DEFAULT_RECHECK_INTERVAL_MS = 15 * 60 * 1000; // 15m
 
 /** A short grace before the auto-download fires, so the UI can show the
  *  fact that an update was *detected* (briefly) before going into "downloading"

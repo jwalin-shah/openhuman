@@ -33,7 +33,8 @@ export type SettingsRoute =
   | 'notifications'
   | 'notification-routing'
   | 'intelligence'
-  | 'webhooks-triggers';
+  | 'webhooks-triggers'
+  | 'composio-triggers';
 
 export interface BreadcrumbItem {
   label: string;
@@ -99,6 +100,7 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
     if (path.includes('/settings/memory-debug')) return 'memory-debug';
     if (path.includes('/settings/webhooks-debug')) return 'webhooks-debug';
     if (path.includes('/settings/webhooks-triggers')) return 'webhooks-triggers';
+    if (path.includes('/settings/composio-triggers')) return 'composio-triggers';
     if (path.includes('/settings/intelligence')) return 'intelligence';
     if (path.includes('/settings/recovery-phrase')) return 'recovery-phrase';
     if (path.includes('/settings/agent-chat')) return 'agent-chat';
@@ -214,15 +216,16 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
       case 'memory-debug':
       case 'intelligence':
       case 'webhooks-triggers':
+      case 'composio-triggers':
+      case 'notification-routing':
         return [settingsCrumb, developerCrumb];
 
       // Developer options section page
       case 'developer-options':
         return [settingsCrumb];
 
-      // Notifications panels sit at the top level of Settings.
+      // Notifications panel sits at the top level of Settings.
       case 'notifications':
-      case 'notification-routing':
         return [settingsCrumb];
 
       case 'home':

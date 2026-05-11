@@ -127,6 +127,14 @@ pub struct AgentDefinition {
     #[serde(default = "defaults::max_iterations")]
     pub max_iterations: usize,
 
+    /// Maximum character length for this sub-agent's output before the
+    /// harness truncates it before feeding it back as a tool result to the
+    /// parent. `None` means no cap (the default for most agents). Set to
+    /// a value for research/planner/code agents to prevent context flooding
+    /// from large outputs.
+    #[serde(default)]
+    pub max_result_chars: Option<usize>,
+
     /// Wall-clock timeout for the sub-agent's execution (seconds).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
@@ -138,10 +146,6 @@ pub struct AgentDefinition {
     /// Reserved for background (asynchronous) execution support.
     #[serde(default)]
     pub background: bool,
-
-    /// Internal flag for `fork` mode sub-agents.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub uses_fork_context: bool,
 
     // ── delegation surface ─────────────────────────────────────────────
     /// Subagents this agent is allowed to spawn via synthesised
@@ -225,10 +229,6 @@ impl SkillsWildcard {
     pub fn matches_all(&self) -> bool {
         self.skills == "*"
     }
-}
-
-fn is_false(b: &bool) -> bool {
-    !b
 }
 
 impl AgentDefinition {

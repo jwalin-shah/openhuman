@@ -534,17 +534,56 @@ impl Agent {
                 .unwrap_or(config.default_temperature)
         );
 
-        Self::build_session_agent_inner(config, agent_id, target_def.as_ref())
+        Self::build_session_agent_inner(config, agent_id, target_def.as_ref(), None)
+    }
+
+    /// Same as [`Self::from_config_for_agent`] but also appends a
+    /// `ReflectionMemoryContextSection` to the assembled
+    /// [`SystemPromptBuilder`], seeded with the `source_chunks` snapshot
+    /// from the spawning subconscious reflection (#623).
+    ///
+    /// Used by `channels::providers::web::build_session_agent` when a
+    /// chat thread's seed message metadata flags
+    /// `origin == "subconscious_reflection"` — the orchestrator then
+    /// has the same memory context the reflection-LLM had, so the user's
+    /// follow-up questions stay grounded in the underlying chunks.
+    pub fn from_config_for_agent_with_reflection_chunks(
+        config: &Config,
+        agent_id: &str,
+        reflection_chunks: Vec<crate::openhuman::subconscious::SourceChunk>,
+    ) -> Result<Self> {
+        // Reuse the same registry-resolution path the canonical
+        // `from_config_for_agent` walks, then route through the inner
+        // constructor with the chunks attached.
+        let target_def: Option<crate::openhuman::agent::harness::definition::AgentDefinition> =
+            match AgentDefinitionRegistry::global() {
+                Some(reg) => reg.get(agent_id).cloned(),
+                None => None,
+            };
+        Self::build_session_agent_inner(
+            config,
+            agent_id,
+            target_def.as_ref(),
+            Some(reflection_chunks),
+        )
     }
 
     /// Internal constructor that consumes the optionally-resolved agent
     /// definition. Split out from [`Agent::from_config_for_agent`] so
     /// the lookup + logging live in one place and the heavy-lifting
     /// body stays readable.
+    ///
+    /// `reflection_chunks`, when present, are appended to the assembled
+    /// `SystemPromptBuilder` as a [`ReflectionMemoryContextSection`] so
+    /// the orchestrator's system prompt carries the same memory context
+    /// the subconscious LLM cited when it produced the spawning
+    /// reflection (#623). Empty / `None` is the default for normal chat
+    /// threads — the section is omitted entirely.
     fn build_session_agent_inner(
         config: &Config,
         agent_id: &str,
         target_def: Option<&crate::openhuman::agent::harness::definition::AgentDefinition>,
+        reflection_chunks: Option<Vec<crate::openhuman::subconscious::SourceChunk>>,
     ) -> Result<Self> {
         let runtime: Arc<dyn host_runtime::RuntimeAdapter> =
             Arc::from(host_runtime::create_runtime(&config.runtime)?);
@@ -723,9 +762,29 @@ impl Agent {
                 .add_section(Box::new(
                     crate::openhuman::learning::UserProfileSection::new(memory.clone()),
                 ));
+            // NOTE: MemoryAccessSection is added after tool-filtering so we can
+            // gate it on retrieval-tool visibility — see below.
             log::info!(
                 "[learning] prompt sections registered (user_reflections, learned_context, user_profile)"
             );
+        }
+
+        // (#623) Memory context for threads spawned from a subconscious
+        // reflection: append the resolved `source_chunks` snapshot from
+        // the reflection row as a `ReflectionMemoryContextSection`. The
+        // resulting system prompt stays byte-stable for the session, so
+        // every chat turn in the thread sees the same memory chunks the
+        // subconscious LLM cited — without re-fetching per turn and
+        // without polluting the visible conversation. No-op when the
+        // caller passes `None` (regular chat threads).
+        if let Some(chunks) = reflection_chunks {
+            if !chunks.is_empty() {
+                log::info!(
+                    "[#623] injecting reflection memory context: {} chunks",
+                    chunks.len()
+                );
+                prompt_builder = prompt_builder.with_reflection_context(chunks);
+            }
         }
 
         // Build post-turn hooks when learning is enabled
@@ -871,6 +930,35 @@ impl Agent {
                 .map(|t| t.name().to_string())
                 .collect(),
         };
+
+        // Phase 4 (#566): add the MemoryAccessSection bias instruction only
+        // when at least one retrieval tool is actually loaded AND survives
+        // filtering. We require both because:
+        //   - the tool may be filtered out by the agent's scope config
+        //   - the tool may not be registered at all on this agent (tool
+        //     listing is build-time configurable)
+        // An empty `visible` set means "no filter" (wildcard / orchestrator
+        // path); in that case any registered retrieval tool is reachable.
+        if config.learning.enabled {
+            let recall_tools = ["memory_recall", "memory_search"];
+            let has_retrieval = recall_tools.iter().any(|name| {
+                let registered = tools.iter().any(|t| t.name() == *name)
+                    || delegation_tools.iter().any(|t| t.name() == *name);
+                let allowed_by_filter = visible.is_empty() || visible.contains(*name);
+                registered && allowed_by_filter
+            });
+            if has_retrieval {
+                prompt_builder = prompt_builder
+                    .add_section(Box::new(crate::openhuman::learning::MemoryAccessSection));
+                log::debug!("[learning] memory_access prompt section registered");
+            } else {
+                log::debug!(
+                    "[learning] skipping MemoryAccessSection — neither memory_recall nor \
+                     memory_search is registered+visible for agent={agent_id}"
+                );
+            }
+        }
+
         // De-duplicate: some synthesised tool names may collide with
         // already-registered tools (unlikely for `delegate_*` names but
         // cheap to guard against).

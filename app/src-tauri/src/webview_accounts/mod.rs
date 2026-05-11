@@ -88,8 +88,29 @@ fn provider_allowed_hosts(provider: &str) -> &'static [&'static str] {
     match provider {
         "whatsapp" => &["whatsapp.com", "whatsapp.net", "wa.me"],
         "telegram" => &["telegram.org", "t.me"],
-        "linkedin" => &["linkedin.com", "licdn.com"],
-        "slack" => &["slack.com", "slack-edge.com", "slackb.com"],
+        "linkedin" => &[
+            "linkedin.com",
+            "licdn.com",
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ],
+        "slack" => &[
+            "slack.com",
+            "slack-edge.com",
+            "slackb.com",
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ],
         "discord" => &[
             "discord.com",
             "discord.gg",
@@ -102,7 +123,19 @@ fn provider_allowed_hosts(provider: &str) -> &'static [&'static str] {
             "gstatic.com",
             "googleapis.com",
         ],
-        "zoom" => &["zoom.us", "zoom.com", "zoomgov.com", "zdassets.com"],
+        "zoom" => &[
+            "zoom.us",
+            "zoom.com",
+            "zoomgov.com",
+            "zdassets.com",
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ],
         "browserscan" => &["browserscan.net"],
         _ => &[],
     }
@@ -170,7 +203,7 @@ fn url_is_internal(provider: &str, url: &Url) -> bool {
     // "external navigation https://accounts.youtube.com/accounts/SetSID?...
     // → system browser"). Whitelist the full Google SSO host family for
     // any provider that uses Google identity.
-    if matches!(provider, "gmail" | "google-meet") && is_google_sso_host(host) {
+    if (provider == "gmail" || provider_supports_google_sso(provider)) && is_google_sso_host(host) {
         return true;
     }
     let allowed = provider_allowed_hosts(provider);
@@ -223,6 +256,28 @@ fn popup_should_stay_in_app(provider: &str, url: &Url) -> bool {
                 None => false,
             }
         }
+        "linkedin" => {
+            // LinkedIn's "Sign in with Google" button is rendered as a Google
+            // Identity Services (GSI) iframe loaded from
+            // `accounts.google.com/gsi/button`. When the user clicks it, GSI
+            // calls `window.open("https://accounts.google.com/gsi/select?...",
+            // "gsig", "width=500,height=600,...")` to show the account chooser.
+            //
+            // This popup MUST stay as a real in-app child window — NOT routed
+            // to the system browser (blank screen) and NOT a parent navigation
+            // (the parent page would be replaced, so the postMessage credential
+            // callback from the popup can never reach LinkedIn's JS handler).
+            //
+            // After the user selects an account the popup postMessages the
+            // signed credential back to the opener; LinkedIn's GSI callback
+            // receives it and completes sign-in (#1021).
+            match url.host_str() {
+                Some(host) => {
+                    is_google_sso_host(host) && url.path().to_ascii_lowercase().contains("gsi")
+                }
+                None => false,
+            }
+        }
         _ => false,
     }
 }
@@ -251,11 +306,27 @@ fn is_provider_native_deep_link_scheme(scheme: &str) -> bool {
     )
 }
 
+/// `true` if this provider lets users sign in with their Google
+/// account from inside the embedded webview.
+///
+/// Slack workspaces commonly enable "Sign in with Google" SSO, so the
+/// Google OAuth popup flow (`window.open("https://accounts.google.com/...")`)
+/// must stay in the per-account CEF session — exactly the same way it
+/// has to for Google Meet. Routing it to the system browser leaks the
+/// auth cookie into the wrong jar and breaks sign-in (#1036).
+///
+/// Keep this list narrow: only providers that actually need to issue
+/// `accounts.google.com` popups should be listed. Other providers
+/// continue to fall through to the default popup-handling path.
+fn provider_supports_google_sso(provider: &str) -> bool {
+    matches!(provider, "google-meet" | "slack" | "zoom" | "linkedin")
+}
+
 /// `true` if a popup request should be denied AND the parent webview
 /// should be navigated to the popup URL instead.
 ///
-/// Used for Google's "Sign in" / "Use another account" flow on the
-/// embedded Google Meet webview: clicking the link issues
+/// Used for Google's "Sign in" / "Use another account" flow on embedded
+/// providers that support Google SSO: clicking the link issues
 /// `window.open("https://accounts.google.com/...")`. We can't route
 /// that to the system browser (the auth cookie would land in the
 /// wrong jar) and we don't want to let CEF spawn an unmanaged child
@@ -263,7 +334,7 @@ fn is_provider_native_deep_link_scheme(scheme: &str) -> bool {
 /// option is to deny the popup and replace the parent's URL so the
 /// in-app webview finishes the auth flow inside the embedded session.
 fn popup_should_navigate_parent(provider: &str, url: &Url) -> Option<Url> {
-    if provider != "google-meet" {
+    if !provider_supports_google_sso(provider) {
         return None;
     }
     if url.scheme() == "about" {
@@ -279,9 +350,11 @@ fn popup_should_navigate_parent(provider: &str, url: &Url) -> Option<Url> {
     // out of OpenHuman entirely. Deny the popup and navigate the
     // embedded parent into the room URL instead — matches the
     // user's expectation that the meeting stays in-app.
-    if let Some(host) = url.host_str() {
-        if host == "meet.google.com" {
-            return Some(url.clone());
+    if provider == "google-meet" {
+        if let Some(host) = url.host_str() {
+            if host == "meet.google.com" {
+                return Some(url.clone());
+            }
         }
     }
     None
@@ -345,6 +418,7 @@ fn is_google_auth_popup(url: &Url) -> bool {
         || path.contains("accountchooser")
         || path.contains("chooseaccount")
         || path.contains("setsid")
+        || path.contains("oauth2")
     {
         return true;
     }
@@ -358,7 +432,8 @@ fn is_google_auth_popup(url: &Url) -> bool {
                 || v.contains("accountchooser")
                 || v.contains("chooseaccount")
                 || v.contains("meet.google.com")
-                || v.contains("mail.google.com"))
+                || v.contains("mail.google.com")
+                || v.contains("linkedin.com"))
     })
 }
 
@@ -589,6 +664,9 @@ pub fn provider_display_name(provider: &str) -> &'static str {
 pub struct WebviewAccountsState {
     /// account_id -> webview label (we use `acct_<id>` as the label).
     inner: Mutex<HashMap<String, String>>,
+    /// account_id -> provider id. Kept so late reveal/close paths can log
+    /// provider-scoped diagnostics without trusting frontend echo fields.
+    account_providers: Mutex<HashMap<String, String>>,
     /// account_id -> CEF `Browser::identifier()`. Populated asynchronously
     /// inside the `with_webview` callback once the renderer hands us the
     /// browser handle, and consumed at close/purge time so we can call
@@ -613,6 +691,13 @@ pub struct WebviewAccountsState {
     /// revealed at the right rect without the frontend having to round-trip
     /// them again.
     requested_bounds: Mutex<HashMap<String, Bounds>>,
+    /// account_id -> `Instant` captured at the moment the cold spawn returns
+    /// from `add_child`. Consumed by `webview_account_reveal` to compute
+    /// `elapsed_ms` (spawn -> frontend reveal call) for the diagnostic log
+    /// instrumented for the Slack first-load investigation (#1036). Cleared
+    /// alongside `loaded_accounts` on close/purge so a subsequent reopen
+    /// starts fresh.
+    spawn_started_at: Mutex<HashMap<String, Instant>>,
     /// Runtime notification-bypass controls used by the settings UI.
     notification_bypass: Mutex<NotificationBypassPrefs>,
     /// Per-label rewrite counter for the gmeet `workspace.google.com`
@@ -631,6 +716,14 @@ pub struct WebviewAccountsState {
     /// "Manage your Google Account" from the avatar menu) are passed
     /// through unchanged.
     gmeet_awaiting_handoff: Mutex<HashSet<String>>,
+    /// account_ids spawned via `webview_account_prewarm` that have not yet
+    /// been opened by the user. Issue #1233 — emit_load_finished suppresses
+    /// `webview-account:load` events for these so the React UI never sees
+    /// load/timeout signals for an account it didn't ask to open. The flag
+    /// is cleared on the first user-initiated `webview_account_open`
+    /// (warm-reopen branch) and on close/purge so subsequent reopens flow
+    /// through the normal cold-load lifecycle.
+    prewarm_accounts: Mutex<HashSet<String>>,
 }
 
 /// Threshold and window for the gmeet workspace-marketing rewrite loop
@@ -769,6 +862,12 @@ impl WebviewAccountsState {
         if let Ok(mut g) = self.requested_bounds.lock() {
             g.clear();
         }
+        if let Ok(mut g) = self.spawn_started_at.lock() {
+            g.clear();
+        }
+        if let Ok(mut g) = self.account_providers.lock() {
+            g.clear();
+        }
         // Per-label gmeet rewrite counter must clear too — `label_for()`
         // reuses the same label on reopen, so a stale saturated entry
         // would jump a fresh open straight to the bail URL.
@@ -779,6 +878,12 @@ impl WebviewAccountsState {
         // hijack the first user-initiated `myaccount.google.com` visit
         // after a relaunch back to Meet.
         if let Ok(mut g) = self.gmeet_awaiting_handoff.lock() {
+            g.clear();
+        }
+        // Issue #1233 — clear prewarm flags so a relaunch can't suppress
+        // load events for accounts that were prewarmed in the previous
+        // session.
+        if let Ok(mut g) = self.prewarm_accounts.lock() {
             g.clear();
         }
         self.inner
@@ -1281,12 +1386,70 @@ pub struct OpenArgs {
     /// Optional URL override (debug tooling) — falls back to `provider_url`.
     pub url: Option<String>,
     pub bounds: Option<Bounds>,
+    /// Issue #1233 — when true, spawn the webview off-screen and route the
+    /// load through the prewarm-suppression path. The full handler/scanner/
+    /// notification setup is identical to a normal cold open; only the
+    /// initial position and the load-event emit are different. Defaults
+    /// to false so the field is forwards-compatible with frontends that
+    /// don't pass it.
+    #[serde(default)]
+    pub prewarm: bool,
+}
+
+/// Issue #1233 — args for the background `webview_account_prewarm` command.
+/// No bounds — prewarm always spawns at a fixed off-screen 1×1 rect; the
+/// user-initiated open later supplies the visible rect via the warm-reopen
+/// branch in `webview_account_open`.
+#[derive(Debug, Deserialize)]
+pub struct PrewarmArgs {
+    pub account_id: String,
+    pub provider: String,
+    /// Optional URL override (debug tooling) — falls back to `provider_url`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BoundsArgs {
     pub account_id: String,
     pub bounds: Bounds,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevealArgs {
+    pub account_id: String,
+    pub bounds: Bounds,
+    #[serde(default)]
+    pub trigger: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RevealTrigger {
+    Load,
+    Watchdog,
+}
+
+impl RevealTrigger {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::Watchdog => "watchdog",
+        }
+    }
+
+    fn from_ipc(raw: Option<&str>) -> Self {
+        match raw {
+            Some("load") | None => Self::Load,
+            Some("watchdog") => Self::Watchdog,
+            Some(other) => {
+                log::warn!(
+                    "[webview-accounts] unknown reveal trigger {:?}; defaulting to load",
+                    other
+                );
+                Self::Load
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1317,7 +1480,7 @@ pub struct WebviewEvent {
 /// OAuth callback codes, sometimes session tokens) and we don't want those
 /// to land in the long-lived shell log file. Returns the original input on
 /// parse failure so we still surface *something* useful for debugging.
-fn redact_url_for_log(raw: &str) -> String {
+pub(crate) fn redact_url_for_log(raw: &str) -> String {
     match Url::parse(raw) {
         Ok(mut u) => {
             u.set_query(None);
@@ -1353,6 +1516,7 @@ pub(crate) fn emit_load_finished<R: Runtime>(
     account_id: &str,
     state: &str,
     url: &str,
+    trigger: RevealTrigger,
 ) {
     let Some(app_state) = app.try_state::<WebviewAccountsState>() else {
         // No state => emit anyway so the frontend doesn't hang; best-effort.
@@ -1362,10 +1526,46 @@ pub(crate) fn emit_load_finished<R: Runtime>(
         );
         let _ = app.emit(
             "webview-account:load",
-            serde_json::json!({"account_id": account_id, "state": state, "url": url}),
+            serde_json::json!({
+                "account_id": account_id,
+                "state": state,
+                "trigger": trigger.as_str(),
+                "url": url,
+            }),
         );
         return;
     };
+
+    // Issue #1233 — accounts in prewarm mode have no React UI listening
+    // for their load events; the user hasn't clicked the rail icon yet.
+    // Suppress emit + reveal so the prewarm cycle finishes silently. The
+    // page is still painted in the off-screen 1×1 webview so the eventual
+    // user click hits the warm-reopen branch and emits `state:"reused"`.
+    if app_state
+        .prewarm_accounts
+        .lock()
+        .unwrap()
+        .contains(account_id)
+    {
+        log::info!(
+            "[webview-accounts][{}] prewarm load suppressed state={} url={}",
+            account_id,
+            state,
+            redact_url_for_log(url)
+        );
+        // Mark the account as loaded so any later signals from the same
+        // cold-load (native on_page_load + CDP Page.loadEventFired both
+        // arriving) don't double-fire if the prewarm flag flips off in
+        // between.
+        if state != "timeout" {
+            app_state
+                .loaded_accounts
+                .lock()
+                .unwrap()
+                .insert(account_id.to_string());
+        }
+        return;
+    }
 
     if state == "timeout" {
         // If we've already observed a terminal load, ignore late watchdogs.
@@ -1384,8 +1584,9 @@ pub(crate) fn emit_load_finished<R: Runtime>(
         }
 
         log::info!(
-            "[webview-accounts][{}] load timeout event url={}",
+            "[webview-accounts][{}] load timeout event trigger={} url={}",
             account_id,
+            trigger.as_str(),
             redact_url_for_log(url)
         );
         if let Err(err) = app.emit(
@@ -1393,6 +1594,7 @@ pub(crate) fn emit_load_finished<R: Runtime>(
             serde_json::json!({
                 "account_id": account_id,
                 "state": state,
+                "trigger": trigger.as_str(),
                 "url": url,
             }),
         ) {
@@ -1478,9 +1680,10 @@ pub(crate) fn emit_load_finished<R: Runtime>(
     // consumer that needs it has access; we just don't persist it to the
     // shell's log file.
     log::info!(
-        "[webview-accounts][{}] load event state={} url={}",
+        "[webview-accounts][{}] load event state={} trigger={} url={}",
         account_id,
         state,
+        trigger.as_str(),
         redact_url_for_log(url)
     );
     if let Err(err) = app.emit(
@@ -1488,6 +1691,7 @@ pub(crate) fn emit_load_finished<R: Runtime>(
         serde_json::json!({
             "account_id": account_id,
             "state": state,
+            "trigger": trigger.as_str(),
             "url": url,
         }),
     ) {
@@ -1633,6 +1837,36 @@ pub async fn webview_account_open<R: Runtime>(
         if let Some(existing_label) = map.get(&args.account_id).cloned() {
             drop(map);
             if let Some(existing) = app.get_webview(&existing_label) {
+                // Issue #1233 — when this is a prewarm call landing on an
+                // already-prewarmed account, do nothing: the webview is
+                // already off-screen, the CDP session is already attached,
+                // and the prewarm flag should stay set so the eventual
+                // user-initiated open can promote it. Just return the label.
+                if args.prewarm {
+                    log::debug!(
+                        "[webview-accounts] prewarm idempotent skip: account={} already warm label={}",
+                        args.account_id,
+                        existing_label
+                    );
+                    return Ok(existing_label);
+                }
+                // Issue #1233 — a prewarmed webview is reaching its first
+                // user-initiated open. Clear the prewarm flag BEFORE we
+                // resize/reveal so any in-flight CDP load event still
+                // racing toward `emit_load_finished` flows through the
+                // normal path instead of being silently suppressed.
+                let was_prewarmed = state
+                    .prewarm_accounts
+                    .lock()
+                    .unwrap()
+                    .remove(&args.account_id);
+                if was_prewarmed {
+                    log::info!(
+                        "[webview-accounts] prewarm hit account={} label={} — promoting to live",
+                        args.account_id,
+                        existing_label
+                    );
+                }
                 if let Some(b) = args.bounds {
                     let _ = existing.set_position(LogicalPosition::new(b.x, b.y));
                     let _ = existing.set_size(LogicalSize::new(b.width, b.height));
@@ -1659,6 +1893,7 @@ pub async fn webview_account_open<R: Runtime>(
                     serde_json::json!({
                         "account_id": args.account_id,
                         "state": "reused",
+                        "trigger": RevealTrigger::Load.as_str(),
                         "url": reuse_url,
                     }),
                 ) {
@@ -2070,6 +2305,7 @@ pub async fn webview_account_open<R: Runtime>(
                 &page_load_account_id,
                 "timeout",
                 &page_load_real_url,
+                RevealTrigger::Load,
             );
             return;
         }
@@ -2078,6 +2314,7 @@ pub async fn webview_account_open<R: Runtime>(
             &page_load_account_id,
             "finished",
             url.as_str(),
+            RevealTrigger::Load,
         );
     });
 
@@ -2092,8 +2329,6 @@ pub async fn webview_account_open<R: Runtime>(
     // placeholder's loading spinner is not covered by the native CEF subview.
     // `webview_account_reveal` (invoked from the frontend after the load event
     // arrives, or by the 15 s watchdog) moves it back to `bounds` + shows it.
-    // We use positive coords well below the parent window rather than large
-    // negative values so multi-monitor layouts stay well-defined.
     //
     // Warm-open reuse (when a webview already exists for this account) earlier
     // in this function returns before we get here, so existing webviews keep
@@ -2111,23 +2346,48 @@ pub async fn webview_account_open<R: Runtime>(
     // that repaint edge case while still keeping the webview visually
     // hidden (1 px under the overlay) during load.
     //
-    // Warm-open reuse returned earlier in this function, so this only
-    // affects the first cold spawn.
-    let initial_size = if skip_cdp_for_debug {
-        LogicalSize::new(bounds.width, bounds.height)
+    // Issue #1233 — when `args.prewarm == true`, the frontend has not asked
+    // for a visible rect (the user hasn't clicked the rail icon yet). Spawn
+    // the webview at a fixed off-screen position with size 1×1 so it never
+    // paints anywhere on screen until the eventual user-initiated open
+    // promotes it via the warm-reopen branch above.
+    let (initial_position, initial_size) = if args.prewarm {
+        (
+            LogicalPosition::new(PREWARM_OFFSCREEN_X, PREWARM_OFFSCREEN_Y),
+            LogicalSize::new(1.0, 1.0),
+        )
+    } else if skip_cdp_for_debug {
+        (
+            LogicalPosition::new(bounds.x, bounds.y),
+            LogicalSize::new(bounds.width, bounds.height),
+        )
     } else {
-        LogicalSize::new(1.0, 1.0)
+        (
+            LogicalPosition::new(bounds.x, bounds.y),
+            LogicalSize::new(1.0, 1.0),
+        )
     };
-    let initial_position = LogicalPosition::new(bounds.x, bounds.y);
 
-    // Remember the bounds the frontend wanted so `webview_account_reveal` has a
-    // rect to restore to even if the frontend's bounds cache is empty (e.g.
-    // after a page reload races the load event).
-    state
-        .requested_bounds
-        .lock()
-        .unwrap()
-        .insert(args.account_id.clone(), bounds);
+    // Issue #1233 — only remember `requested_bounds` for non-prewarm opens.
+    // Prewarm doesn't have a visible rect to restore to; the user-initiated
+    // open later supplies the bounds via the warm-reopen branch.
+    if !args.prewarm {
+        state
+            .requested_bounds
+            .lock()
+            .unwrap()
+            .insert(args.account_id.clone(), bounds);
+    }
+    // Issue #1233 — mark the account as prewarmed BEFORE add_child so the
+    // load-event suppression in `emit_load_finished` is in place by the time
+    // the CDP session or native on_page_load fires.
+    if args.prewarm {
+        state
+            .prewarm_accounts
+            .lock()
+            .unwrap()
+            .insert(args.account_id.clone());
+    }
     // Defensive reset: if a prior close/purge was raced by a stale emit we
     // could still have the account marked as "already loaded". Clear here so
     // the fresh spawn is allowed to fire the first event again.
@@ -2140,6 +2400,19 @@ pub async fn webview_account_open<R: Runtime>(
     let webview = parent_window
         .add_child(builder, initial_position, initial_size)
         .map_err(|e| format!("add_child failed: {e}"))?;
+
+    // Capture the cold-spawn timestamp so the reveal-time log can compute
+    // spawn -> frontend reveal latency for the Slack first-load investigation.
+    state
+        .spawn_started_at
+        .lock()
+        .unwrap()
+        .insert(args.account_id.clone(), Instant::now());
+    state
+        .account_providers
+        .lock()
+        .unwrap()
+        .insert(args.account_id.clone(), args.provider.clone());
 
     log::info!(
         "[webview-accounts] spawned label={} requested_bounds={:?} initial_size={:?}",
@@ -2319,6 +2592,51 @@ pub async fn webview_account_open<R: Runtime>(
     Ok(label)
 }
 
+/// Off-screen position used for the prewarmed webview. Same magnitude as
+/// the [`super::lib::CEF_PREWARM_LABEL`] warmup placeholder so the native
+/// view is well outside any plausible monitor layout. Issue #1233.
+pub(crate) const PREWARM_OFFSCREEN_X: f64 = -20_000.0;
+pub(crate) const PREWARM_OFFSCREEN_Y: f64 = -20_000.0;
+
+/// Issue #1233 — spawn a hidden 1×1 webview for `account_id` so its CEF
+/// profile and provider page are warm before the user clicks the rail icon.
+/// On the user's first click, the existing `webview_account_open` warm-reopen
+/// branch reuses the prewarmed webview and emits `state:"reused"` so the React
+/// loading overlay never has to wait for a cold load.
+///
+/// Implemented as a thin delegate to `webview_account_open` with
+/// `prewarm: true`. Sharing the cold-open code path means the prewarmed
+/// webview gets the full handler suite (`on_navigation`, `on_new_window`,
+/// `on_page_load`), the per-provider scanner bootstrap, and the CEF
+/// notification registration — none of which can be retroactively wired
+/// when the warm-reopen branch later returns early.
+///
+/// Idempotent — calling for an already-warm account is a no-op. Best-effort —
+/// the frontend can safely fire-and-forget; on failure the worst case is a
+/// normal cold open later.
+#[tauri::command]
+pub async fn webview_account_prewarm<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, WebviewAccountsState>,
+    args: PrewarmArgs,
+) -> Result<(), String> {
+    log::info!(
+        "[webview-accounts] prewarm account_id={} provider={}",
+        args.account_id,
+        args.provider
+    );
+    let open_args = OpenArgs {
+        account_id: args.account_id,
+        provider: args.provider,
+        url: args.url,
+        bounds: None,
+        prewarm: true,
+    };
+    webview_account_open(app, state, open_args)
+        .await
+        .map(|_| ())
+}
+
 #[tauri::command]
 pub async fn webview_account_close<R: Runtime>(
     app: AppHandle<R>,
@@ -2375,6 +2693,23 @@ pub async fn webview_account_close<R: Runtime>(
         .remove(&args.account_id);
     state
         .requested_bounds
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    state
+        .spawn_started_at
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    state
+        .account_providers
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    // Issue #1233 — drop the prewarm flag too so a future prewarm dispatch
+    // for the same id can re-attempt cleanly.
+    state
+        .prewarm_accounts
         .lock()
         .unwrap()
         .remove(&args.account_id);
@@ -2442,6 +2777,22 @@ pub async fn webview_account_purge<R: Runtime>(
         .remove(&args.account_id);
     state
         .requested_bounds
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    state
+        .spawn_started_at
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    state
+        .account_providers
+        .lock()
+        .unwrap()
+        .remove(&args.account_id);
+    // Issue #1233 — drop the prewarm flag too on purge.
+    state
+        .prewarm_accounts
         .lock()
         .unwrap()
         .remove(&args.account_id);
@@ -2572,7 +2923,7 @@ pub async fn webview_account_bounds<R: Runtime>(
 pub async fn webview_account_reveal<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, WebviewAccountsState>,
-    args: BoundsArgs,
+    args: RevealArgs,
 ) -> Result<(), String> {
     let label_opt = state.inner.lock().unwrap().get(&args.account_id).cloned();
     let Some(label) = label_opt else {
@@ -2597,9 +2948,28 @@ pub async fn webview_account_reveal<R: Runtime>(
         .lock()
         .unwrap()
         .insert(args.account_id.clone(), args.bounds);
+    let provider = state
+        .account_providers
+        .lock()
+        .unwrap()
+        .get(&args.account_id)
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
+    let elapsed_ms = state
+        .spawn_started_at
+        .lock()
+        .unwrap()
+        .remove(&args.account_id)
+        .map(|started| started.elapsed().as_millis())
+        .map(|ms| ms.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let trigger = RevealTrigger::from_ipc(args.trigger.as_deref()).as_str();
     log::info!(
-        "[webview-accounts] revealed label={} -> {:?}",
-        label,
+        "[webview-accounts][{}][{}] reveal trigger={} elapsed_ms={} bounds={:?}",
+        provider,
+        args.account_id,
+        trigger,
+        elapsed_ms,
         args.bounds
     );
     Ok(())
@@ -2865,6 +3235,20 @@ mod tests {
         Url::parse(s).expect("valid url")
     }
 
+    #[test]
+    fn reveal_trigger_from_ipc_warns_and_defaults_unknown_to_load() {
+        assert_eq!(RevealTrigger::from_ipc(None), RevealTrigger::Load);
+        assert_eq!(RevealTrigger::from_ipc(Some("load")), RevealTrigger::Load);
+        assert_eq!(
+            RevealTrigger::from_ipc(Some("watchdog")),
+            RevealTrigger::Watchdog
+        );
+        assert_eq!(
+            RevealTrigger::from_ipc(Some("watchdog-typo")),
+            RevealTrigger::Load
+        );
+    }
+
     // ── shutdown teardown ──────────────────────────────────
 
     /// Smoke-test [`WebviewAccountsState::drain_for_shutdown`] in isolation
@@ -2914,6 +3298,11 @@ mod tests {
             .unwrap()
             .insert("acct-1".into(), "acct_1".into());
         state
+            .account_providers
+            .lock()
+            .unwrap()
+            .insert("acct-1".into(), "slack".into());
+        state
             .loaded_accounts
             .lock()
             .unwrap()
@@ -2927,6 +3316,11 @@ mod tests {
                 height: 600.0,
             },
         );
+        state
+            .spawn_started_at
+            .lock()
+            .unwrap()
+            .insert("acct-1".into(), Instant::now());
         // Saturate the gmeet rewrite counter so we can assert it gets
         // cleared by drain (otherwise the next reopen would inherit a
         // stale entry — `label_for()` reuses the same label).
@@ -2952,8 +3346,10 @@ mod tests {
         assert!(state.load_watchdogs.lock().unwrap().is_empty());
         assert!(state.browser_ids.lock().unwrap().is_empty());
         assert!(state.inner.lock().unwrap().is_empty());
+        assert!(state.account_providers.lock().unwrap().is_empty());
         assert!(state.loaded_accounts.lock().unwrap().is_empty());
         assert!(state.requested_bounds.lock().unwrap().is_empty());
+        assert!(state.spawn_started_at.lock().unwrap().is_empty());
         assert!(
             state.gmeet_marketing_rewrites.lock().unwrap().is_empty(),
             "gmeet rewrite counter must clear on drain so reopens don't inherit stale entries"
@@ -2964,6 +3360,7 @@ mod tests {
         assert!(labels2.is_empty());
         assert!(state.cdp_sessions.lock().unwrap().is_empty());
         assert!(state.inner.lock().unwrap().is_empty());
+        assert!(state.account_providers.lock().unwrap().is_empty());
     }
 
     // ── provider registry match arms ──────────────────────────────────
@@ -2988,6 +3385,234 @@ mod tests {
         assert!(hosts.contains(&"zoom.us"), "zoom.us in allowlist");
         assert!(hosts.contains(&"zoomgov.com"), "zoomgov.com in allowlist");
         assert!(hosts.contains(&"zdassets.com"), "zdassets.com in allowlist");
+    }
+
+    #[test]
+    fn zoom_allowed_hosts_covers_google_oauth() {
+        // Zoom's "Sign in with Google" reroutes the popup into the
+        // embedded webview (see popup_should_navigate_parent). The
+        // resulting accounts.google.com / oauth2.googleapis.com /
+        // www.googleapis.com hops MUST be classified internal so the
+        // auth chain doesn't escape to the system browser mid-flight
+        // and trigger Zoom error 300 (#1294).
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://accounts.google.com/v3/signin/identifier"),
+        ));
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://oauth2.googleapis.com/token"),
+        ));
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://www.googleapis.com/oauth2/v3/userinfo"),
+        ));
+    }
+
+    #[test]
+    fn zoom_supports_google_sso() {
+        // Zoom's web client offers "Sign in with Google" via a popup
+        // window.open("https://accounts.google.com/..."). The popup
+        // gate at popup_should_navigate_parent gates on this helper —
+        // without zoom listed the popup falls through to the system
+        // browser and breaks the auth callback (#1294).
+        assert!(provider_supports_google_sso("zoom"));
+    }
+
+    #[test]
+    fn zoom_popup_navigates_parent_for_google_sso() {
+        // Mirror of slack_google_signin_popup_navigates_parent —
+        // clicking "Sign in with Google" inside Zoom MUST replace the
+        // parent webview's URL instead of escaping to the system
+        // browser, so the Google session cookie lands in the per-account
+        // CEF profile (#1294).
+        assert_eq!(
+            popup_should_navigate_parent(
+                "zoom",
+                &url("https://accounts.google.com/v3/signin/identifier"),
+            )
+            .map(|u| u.to_string()),
+            Some("https://accounts.google.com/v3/signin/identifier".to_string())
+        );
+    }
+
+    // ── LinkedIn Google SSO (issue #1021) ──────────────────────────────
+
+    #[test]
+    fn linkedin_supports_google_sso() {
+        // LinkedIn's "Sign in with Google" button must be handled in-app;
+        // without linkedin in provider_supports_google_sso the popup falls
+        // through to the system browser, which opens blank (#1021).
+        assert!(provider_supports_google_sso("linkedin"));
+    }
+
+    #[test]
+    fn linkedin_allowed_hosts_cover_google_oauth() {
+        // Google auth chain hops through oauth2.googleapis.com and
+        // www.googleapis.com which are not Google SSO hosts and must be
+        // present in the explicit allowlist so mid-flight redirects don't
+        // leak to the system browser.
+        let hosts = provider_allowed_hosts("linkedin");
+        for host in [
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ] {
+            assert!(hosts.contains(&host), "{host} in LinkedIn allowlist");
+        }
+    }
+
+    #[test]
+    fn linkedin_google_signin_popup_navigates_parent() {
+        // Clicking "Sign in with Google" on LinkedIn's login page issues a
+        // window.open to accounts.google.com/signin/... — must navigate the
+        // parent in-app instead of opening the system browser (#1021).
+        assert_eq!(
+            popup_should_navigate_parent(
+                "linkedin",
+                &url("https://accounts.google.com/v3/signin/identifier"),
+            )
+            .map(|u| u.to_string()),
+            Some("https://accounts.google.com/v3/signin/identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn linkedin_google_oauth2_popup_navigates_parent() {
+        // LinkedIn may issue window.open to the initial OAuth2 auth
+        // endpoint (/o/oauth2/v2/auth) which doesn't contain "signin"
+        // in the path — must still be caught and routed in-app (#1021).
+        assert!(popup_should_navigate_parent(
+            "linkedin",
+            &url("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=https://www.linkedin.com/..."),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn linkedin_google_sso_navigation_is_internal() {
+        // Direct (non-popup) navigation to accounts.google.com during the
+        // LinkedIn Google SSO flow must be classified internal so it stays
+        // in the embedded webview.
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://accounts.google.com/v3/signin/identifier"),
+        ));
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://accounts.youtube.com/accounts/SetSID?..."),
+        ));
+    }
+
+    #[test]
+    fn linkedin_own_domain_still_internal() {
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://www.linkedin.com/messaging/"),
+        ));
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://media.licdn.com/dms/image/foo.jpg"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_unrelated_popup_still_goes_to_system_browser() {
+        // Non-Google external links from LinkedIn must still route out.
+        assert!(
+            popup_should_navigate_parent("linkedin", &url("https://example.com/blog"),).is_none()
+        );
+        assert!(!popup_should_stay_in_app(
+            "linkedin",
+            &url("https://example.com/blog"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_gsi_popup_stays_in_app() {
+        // LinkedIn's "Sign in with Google" uses the Google Identity Services
+        // (GSI) library. The GSI button iframe (accounts.google.com/gsi/button)
+        // calls window.open("accounts.google.com/gsi/select?...") to show the
+        // account chooser. This popup must be an in-app child window — NOT sent
+        // to the system browser (blank screen) and NOT a parent navigation (the
+        // postMessage credential callback would have no opener to reach) (#1021).
+        assert!(popup_should_stay_in_app(
+            "linkedin",
+            &url(
+                "https://accounts.google.com/gsi/select?client_id=990339570472-k6nq&ux_mode=popup"
+            ),
+        ));
+        assert!(popup_should_stay_in_app(
+            "linkedin",
+            &url("https://accounts.google.com/gsi/issue?client_id=x"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_gsi_popup_does_not_navigate_parent() {
+        // The GSI account-chooser popup must NOT navigate the parent — it needs
+        // to remain a child popup for postMessage to work.
+        assert!(popup_should_navigate_parent(
+            "linkedin",
+            &url("https://accounts.google.com/gsi/select?client_id=x"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn slack_allowed_hosts_include_google_oauth() {
+        let hosts = provider_allowed_hosts("slack");
+        for host in [
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ] {
+            assert!(hosts.contains(&host), "{host} in Slack allowlist");
+        }
+    }
+
+    #[test]
+    fn slack_allowed_hosts_still_internal_for_slack_origins() {
+        assert!(url_is_internal(
+            "slack",
+            &url("https://app.slack.com/client/T123/C456"),
+        ));
+        assert!(url_is_internal(
+            "slack",
+            &url("https://a.slack-edge.com/bv1/app.js"),
+        ));
+        assert!(url_is_internal(
+            "slack",
+            &url("https://wss-primary.slack.com/?ticket=redacted"),
+        ));
+    }
+
+    #[test]
+    fn slack_allowed_hosts_do_not_bare_allow_google() {
+        let hosts = provider_allowed_hosts("slack");
+        assert!(
+            !hosts.contains(&"google.com"),
+            "bare google.com not allowed"
+        );
+        assert!(!hosts.contains(&"googleusercontent.com"));
+        assert!(!hosts.contains(&"gstatic.com"));
+        assert!(!hosts.contains(&"googleapis.com"));
+
+        assert!(url_is_internal(
+            "slack",
+            &url("https://accounts.google.com/v3/signin/identifier"),
+        ));
+        assert!(!url_is_internal("slack", &url("https://google.com/")));
+        assert!(!url_is_internal("slack", &url("https://mail.google.com/")));
+        assert!(!url_is_internal("slack", &url("https://apis.google.com/")));
     }
 
     #[test]
@@ -3282,11 +3907,21 @@ mod tests {
 
     #[test]
     fn unsupported_provider_popup_does_not_navigate_parent() {
-        // Only the embedded google-meet webview opts into the
-        // popup-takeover path. Every other provider (and any unknown
-        // string) must fall through to the default popup-handling.
+        // Only providers that explicitly support Google SSO opt into
+        // the popup-takeover path. Every other provider (and any unknown
+        // string) must fall through to the default popup handling.
         assert!(popup_should_navigate_parent(
-            "linkedin",
+            "discord",
+            &url("https://accounts.google.com/signin/v2/identifier"),
+        )
+        .is_none());
+        assert!(popup_should_navigate_parent(
+            "whatsapp",
+            &url("https://accounts.google.com/signin/v2/identifier"),
+        )
+        .is_none());
+        assert!(popup_should_navigate_parent(
+            "unknown-provider",
             &url("https://accounts.google.com/signin/v2/identifier"),
         )
         .is_none());
@@ -3299,6 +3934,46 @@ mod tests {
             &url("https://accounts.google.com/signin/v2/identifier"),
         )
         .is_some());
+    }
+
+    #[test]
+    fn slack_google_signin_popup_navigates_parent() {
+        assert_eq!(
+            popup_should_navigate_parent(
+                "slack",
+                &url("https://accounts.google.com/v3/signin/identifier"),
+            )
+            .map(|u| u.to_string()),
+            Some("https://accounts.google.com/v3/signin/identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn slack_about_blank_popup_does_not_navigate_parent() {
+        assert!(popup_should_navigate_parent("slack", &url("about:blank")).is_none());
+    }
+
+    #[test]
+    fn slack_same_origin_popup_does_not_navigate_parent() {
+        assert!(popup_should_navigate_parent(
+            "slack",
+            &url("https://app.slack.com/client/T123/C456"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn slack_unrelated_popup_does_not_navigate_parent() {
+        assert!(popup_should_navigate_parent("slack", &url("https://example.com/blog"),).is_none());
+    }
+
+    #[test]
+    fn slack_meet_google_com_popup_does_not_navigate_parent() {
+        assert!(popup_should_navigate_parent(
+            "slack",
+            &url("https://meet.google.com/abc-defg-hij"),
+        )
+        .is_none());
     }
 
     #[test]
@@ -3349,6 +4024,22 @@ mod tests {
             popup_should_navigate_parent("google-meet", &url("https://example.com/blog"),)
                 .is_none()
         );
+    }
+
+    // ── provider_supports_google_sso ───────────────────────────────────
+
+    #[test]
+    fn provider_supports_google_sso_matrix() {
+        assert!(provider_supports_google_sso("google-meet"));
+        assert!(provider_supports_google_sso("slack"));
+        assert!(provider_supports_google_sso("zoom"));
+        assert!(provider_supports_google_sso("linkedin"));
+        assert!(!provider_supports_google_sso("whatsapp"));
+        assert!(!provider_supports_google_sso("telegram"));
+        assert!(!provider_supports_google_sso("discord"));
+        assert!(!provider_supports_google_sso("browserscan"));
+        assert!(!provider_supports_google_sso(""));
+        assert!(!provider_supports_google_sso("unknown-provider"));
     }
 
     #[test]
@@ -3523,6 +4214,14 @@ mod tests {
     }
 
     #[test]
+    fn url_is_internal_allows_youtube_setsid_for_slack_google_sso() {
+        assert!(url_is_internal(
+            "slack",
+            &url("https://accounts.youtube.com/accounts/SetSID?ssdc=1&continue=https://app.slack.com/"),
+        ));
+    }
+
+    #[test]
     fn url_is_internal_allows_cctld_accounts_google_for_gmail() {
         assert!(url_is_internal(
             "gmail",
@@ -3677,5 +4376,45 @@ mod tests {
         // Stale flag would hijack the first user-initiated
         // `myaccount.google.com` visit after relaunch.
         assert!(!state.take_awaiting_gmeet_handoff("acct_test"));
+    }
+
+    // ── prewarm bookkeeping (issue #1233) ──────────────────
+
+    /// Default state must include an empty `prewarm_accounts` set so
+    /// fresh boots never spuriously suppress load events.
+    #[test]
+    fn prewarm_accounts_default_is_empty() {
+        let state = WebviewAccountsState::default();
+        assert!(state.prewarm_accounts.lock().unwrap().is_empty());
+    }
+
+    /// Inserting an id into `prewarm_accounts` and then removing it should
+    /// leave the set empty — covers the warm-reopen path where the user's
+    /// first click promotes the prewarmed webview to live.
+    #[test]
+    fn prewarm_accounts_insert_then_remove_clears() {
+        let state = WebviewAccountsState::default();
+        state
+            .prewarm_accounts
+            .lock()
+            .unwrap()
+            .insert("acct-1".to_string());
+        assert!(state.prewarm_accounts.lock().unwrap().contains("acct-1"));
+        state.prewarm_accounts.lock().unwrap().remove("acct-1");
+        assert!(!state.prewarm_accounts.lock().unwrap().contains("acct-1"));
+    }
+
+    /// `drain_for_shutdown` must not leak prewarm flags either — otherwise
+    /// a relaunch could spuriously suppress the very first cold open.
+    #[test]
+    fn prewarm_flag_cleared_by_drain_for_shutdown() {
+        let state = WebviewAccountsState::default();
+        state
+            .prewarm_accounts
+            .lock()
+            .unwrap()
+            .insert("acct-warm".to_string());
+        let _ = state.drain_for_shutdown();
+        assert!(state.prewarm_accounts.lock().unwrap().is_empty());
     }
 }

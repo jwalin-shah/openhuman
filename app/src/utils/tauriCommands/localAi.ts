@@ -181,7 +181,7 @@ export interface PresetsResponse {
   device: DeviceProfileResult;
   /** When true the device is below the RAM floor and cloud fallback is the recommended default. */
   recommend_disabled?: boolean;
-  /** Current value of `config.local_ai.enabled`. When false, cloud fallback is in use. */
+  /** Current value of `config.local_ai.runtime_enabled`. When false, cloud fallback is in use. */
   local_ai_enabled?: boolean;
 }
 
@@ -195,8 +195,14 @@ export interface ApplyPresetResult {
   local_ai_enabled?: boolean;
 }
 
+export type RepairAction =
+  | { action: 'install_ollama' }
+  | { action: 'start_server'; binary_path: string | null }
+  | { action: 'pull_model'; model: string };
+
 export interface LocalAiDiagnostics {
   ollama_running: boolean;
+  ollama_base_url: string;
   ollama_binary_path: string | null;
   vision_mode?: string;
   installed_models: Array<{ name: string; size?: number | null; modified_at?: string | null }>;
@@ -209,6 +215,7 @@ export interface LocalAiDiagnostics {
     vision_found: boolean;
   };
   issues: string[];
+  repair_actions: RepairAction[];
   ok: boolean;
 }
 

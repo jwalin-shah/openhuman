@@ -6,6 +6,7 @@ import { PersistGate } from 'redux-persist/integration/react';
 
 import AppRoutes from './AppRoutes';
 import AppUpdatePrompt from './components/AppUpdatePrompt';
+import BootCheckGate from './components/BootCheckGate/BootCheckGate';
 import BottomTabBar from './components/BottomTabBar';
 import CommandProvider from './components/commands/CommandProvider';
 import ServiceBlockingGate from './components/daemon/ServiceBlockingGate';
@@ -17,6 +18,7 @@ import OpenhumanLinkModal from './components/OpenhumanLinkModal';
 import PersistRehydrationScreen from './components/PersistRehydrationScreen';
 import GlobalUpsellBanner from './components/upsell/GlobalUpsellBanner';
 import AppWalkthrough from './components/walkthrough/AppWalkthrough';
+import { MascotFrameProducer } from './features/meet/MascotFrameProducer';
 // [#1123] Commented out — welcome-agent onboarding replaced by Joyride walkthrough
 // import { isWelcomeLocked } from './lib/coreState/store';
 import { startNativeNotificationsService } from './lib/nativeNotifications';
@@ -49,22 +51,24 @@ function App() {
       )}>
       <Provider store={store}>
         <PersistGate loading={<PersistRehydrationScreen />} persistor={persistor}>
-          <CoreStateProvider>
-            <SocketProvider>
-              <ChatRuntimeProvider>
-                <Router>
-                  <CommandProvider>
-                    <ServiceBlockingGate>
-                      <AppShell />
-                      <DictationHotkeyManager />
-                      <LocalAIDownloadSnackbar />
-                      <AppUpdatePrompt />
-                    </ServiceBlockingGate>
-                  </CommandProvider>
-                </Router>
-              </ChatRuntimeProvider>
-            </SocketProvider>
-          </CoreStateProvider>
+          <BootCheckGate>
+            <CoreStateProvider>
+              <SocketProvider>
+                <ChatRuntimeProvider>
+                  <Router>
+                    <CommandProvider>
+                      <ServiceBlockingGate>
+                        <AppShell />
+                        <DictationHotkeyManager />
+                        <LocalAIDownloadSnackbar />
+                        <AppUpdatePrompt />
+                      </ServiceBlockingGate>
+                    </CommandProvider>
+                  </Router>
+                </ChatRuntimeProvider>
+              </SocketProvider>
+            </CoreStateProvider>
+          </BootCheckGate>
         </PersistGate>
       </Provider>
     </Sentry.ErrorBoundary>
@@ -175,6 +179,11 @@ function AppShell() {
         {!onOnboardingRoute && <BottomTabBar />}
       </div>
       <OpenhumanLinkModal />
+      {/* Hidden Remotion-driven producer for the Meet camera. Mounts a
+          640×480 JPEG frame stream to the Rust frame bus while a meet
+          call is active; idle no-op otherwise. See
+          features/meet/MascotFrameProducer.tsx. */}
+      <MascotFrameProducer />
       {/* Post-onboarding Joyride walkthrough — mounted here (outside routes) so
           it persists across tab navigations. Joyride targets span Home + BottomTabBar
           tabs so it must stay mounted while the user moves between routes. */}

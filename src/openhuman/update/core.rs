@@ -4,6 +4,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use crate::openhuman::config::UpdateRestartStrategy;
 use crate::openhuman::update::types::{GitHubAsset, GitHubRelease, UpdateApplyResult, UpdateInfo};
 
 /// GitHub owner/repo for the core binary releases.
@@ -99,17 +100,34 @@ pub async fn check_available() -> Result<UpdateInfo, String> {
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("failed to fetch latest release: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("failed to fetch latest release: {e}");
+            crate::core::observability::report_error(
+                msg.as_str(),
+                "update",
+                "check_releases",
+                &[("failure", "transport")],
+            );
+            msg
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
+        let status_str = status.as_u16().to_string();
         let body = response.text().await.unwrap_or_else(|_| "(no body)".into());
         log::warn!(
             "[update] GitHub API returned {}: {}",
             status,
             &body[..body.len().min(200)]
         );
-        return Err(format!("GitHub API error: {status}"));
+        let msg = format!("GitHub API error: {status}");
+        crate::core::observability::report_error(
+            msg.as_str(),
+            "update",
+            "check_releases",
+            &[("status", status_str.as_str()), ("failure", "non_2xx")],
+        );
+        return Err(msg);
     }
 
     let release: GitHubRelease = response
@@ -180,14 +198,32 @@ pub async fn download_and_stage_with_version(
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
-    let response = client
-        .get(download_url)
-        .send()
-        .await
-        .map_err(|e| format!("failed to download update: {e}"))?;
+    let response = client.get(download_url).send().await.map_err(|e| {
+        let msg = format!("failed to download update: {e}");
+        crate::core::observability::report_error(
+            msg.as_str(),
+            "update",
+            "download",
+            &[("asset", asset_name), ("failure", "transport")],
+        );
+        msg
+    })?;
 
     if !response.status().is_success() {
-        return Err(format!("download failed with status {}", response.status()));
+        let status = response.status();
+        let status_str = status.as_u16().to_string();
+        let msg = format!("download failed with status {}", status);
+        crate::core::observability::report_error(
+            msg.as_str(),
+            "update",
+            "download",
+            &[
+                ("asset", asset_name),
+                ("status", status_str.as_str()),
+                ("failure", "non_2xx"),
+            ],
+        );
+        return Err(msg);
     }
 
     let bytes = response
@@ -248,6 +284,7 @@ pub async fn download_and_stage_with_version(
         installed_version,
         staged_path: staged_path.to_string_lossy().to_string(),
         restart_required: true,
+        restart_strategy: UpdateRestartStrategy::SelfReplace,
     })
 }
 

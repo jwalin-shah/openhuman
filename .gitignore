@@ -19,6 +19,7 @@ package-lock.json
 node_modules
 dist
 dist-ssr
+dist-web
 *.local
 
 # Environment variables
@@ -64,6 +65,7 @@ e2e-results/
 wdio-logs/
 test-results/
 coverage/
+app/public/generated/remotion/
 
 tauri.key
 tauri.key.pub

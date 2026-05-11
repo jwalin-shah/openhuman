@@ -5,6 +5,57 @@ use std::error::Error as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Maximum length (in bytes) of backend error body included in propagated
+/// errors. Keep this bounded — error messages flow through tracing/Sentry and
+/// are surfaced in user-facing toasts, neither of which want a 100KB blob.
+pub(crate) const MAX_ERROR_BODY_LEN: usize = 500;
+
+/// Extract a human-readable failure detail from a backend error response body.
+///
+/// The backend wraps every error response in
+/// `{ "success": false, "error": "<msg>" }` (see
+/// `backend-openhuman/src/middlewares/errorHandler.ts`). When the body parses
+/// as that envelope, return the inner `error` string verbatim — it is the
+/// authoritative failure message (e.g. `"Insufficient balance"`,
+/// `"Toolkit \"X\" is not enabled"`).
+///
+/// Otherwise (non-JSON body, missing `error` field) fall back to the raw
+/// text truncated to `max_bytes` at a UTF-8 char boundary so callers always
+/// get *something* to grep for, without unbounded memory in error paths.
+pub(crate) fn extract_error_detail(body: &str, max_bytes: usize) -> String {
+    if body.is_empty() {
+        return "<empty body>".to_string();
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = v.get("error").and_then(|e| e.as_str()) {
+            let trimmed = msg.trim();
+            if !trimmed.is_empty() {
+                return truncate_at_char_boundary(trimmed, max_bytes);
+            }
+        }
+    }
+    truncate_at_char_boundary(body, max_bytes)
+}
+
+fn truncate_at_char_boundary(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    // Reserve space for the trailing `…` so the returned string never
+    // exceeds `max` bytes. Without this, a 500-byte cap could return
+    // 503 bytes (500 raw + 3-byte ellipsis), breaking the hard cap that
+    // Sentry tag values and user-facing toasts rely on.
+    let ellipsis_len = '…'.len_utf8();
+    if max < ellipsis_len {
+        return String::new();
+    }
+    let mut end = max - ellipsis_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 /// Shared client for all integration tools. Holds backend URL, auth token,
 /// a reusable `reqwest::Client`, and a lazily-fetched pricing cache.
 pub struct IntegrationClient {
@@ -69,19 +120,31 @@ impl IntegrationClient {
                     chain.push_str(&s.to_string());
                     src = s.source();
                 }
-                tracing::warn!("[integrations] POST {} failed: {}", url, chain);
+                crate::core::observability::report_error(
+                    chain.as_str(),
+                    "integrations",
+                    "post",
+                    &[("path", path), ("failure", "transport")],
+                );
                 anyhow::anyhow!("POST {} failed: {}", url, chain)
             })?;
 
         let status = resp.status();
         if !status.is_success() {
-            let _body_text = resp.text().await.unwrap_or_default();
-            tracing::debug!(
-                "[integrations] POST {} → {} <redacted-response>",
-                url,
-                status
+            let body_text = resp.text().await.unwrap_or_default();
+            let detail = extract_error_detail(&body_text, MAX_ERROR_BODY_LEN);
+            let status_str = status.as_u16().to_string();
+            crate::core::observability::report_error(
+                format!("Backend returned {status} for POST {url}: {detail}").as_str(),
+                "integrations",
+                "post",
+                &[
+                    ("path", path),
+                    ("status", status_str.as_str()),
+                    ("failure", "non_2xx"),
+                ],
             );
-            anyhow::bail!("Backend returned {} for POST {}", status, url);
+            anyhow::bail!("Backend returned {status} for POST {url}: {detail}");
         }
 
         let envelope: BackendResponse<T> = resp.json().await?;
@@ -89,6 +152,12 @@ impl IntegrationClient {
             let msg = envelope
                 .error
                 .unwrap_or_else(|| "unknown backend error".into());
+            crate::core::observability::report_error(
+                msg.as_str(),
+                "integrations",
+                "post",
+                &[("path", path), ("failure", "envelope_error")],
+            );
             anyhow::bail!("Backend error for POST {}: {}", url, msg);
         }
         envelope
@@ -115,19 +184,31 @@ impl IntegrationClient {
                     chain.push_str(&s.to_string());
                     src = s.source();
                 }
-                tracing::warn!("[integrations] GET {} failed: {}", url, chain);
+                crate::core::observability::report_error(
+                    chain.as_str(),
+                    "integrations",
+                    "get",
+                    &[("path", path), ("failure", "transport")],
+                );
                 anyhow::anyhow!("GET {} failed: {}", url, chain)
             })?;
 
         let status = resp.status();
         if !status.is_success() {
-            let _body_text = resp.text().await.unwrap_or_default();
-            tracing::debug!(
-                "[integrations] GET {} → {} <redacted-response>",
-                url,
-                status
+            let body_text = resp.text().await.unwrap_or_default();
+            let detail = extract_error_detail(&body_text, MAX_ERROR_BODY_LEN);
+            let status_str = status.as_u16().to_string();
+            crate::core::observability::report_error(
+                format!("Backend returned {status} for GET {url}: {detail}").as_str(),
+                "integrations",
+                "get",
+                &[
+                    ("path", path),
+                    ("status", status_str.as_str()),
+                    ("failure", "non_2xx"),
+                ],
             );
-            anyhow::bail!("Backend returned {} for GET {}", status, url);
+            anyhow::bail!("Backend returned {status} for GET {url}: {detail}");
         }
 
         let envelope: BackendResponse<T> = resp.json().await?;
@@ -135,6 +216,12 @@ impl IntegrationClient {
             let msg = envelope
                 .error
                 .unwrap_or_else(|| "unknown backend error".into());
+            crate::core::observability::report_error(
+                msg.as_str(),
+                "integrations",
+                "get",
+                &[("path", path), ("failure", "envelope_error")],
+            );
             anyhow::bail!("Backend error for GET {}: {}", url, msg);
         }
         envelope
@@ -217,3 +304,7 @@ pub fn build_client(config: &crate::openhuman::config::Config) -> Option<Arc<Int
         }
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;
