@@ -524,14 +524,18 @@ describe('Today page', () => {
     // Focus first row
     fireEvent.keyDown(document, { key: 'j' });
 
-    let rows = document.querySelectorAll('[data-testid="today-feed"] li');
-    expect(rows[0].className).toContain('ring-2');
+    await waitFor(() => {
+      const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+      expect(rows[0].className).toContain('ring-2');
+    });
 
     // Press Escape to clear focus
     fireEvent.keyDown(document, { key: 'Escape' });
 
-    rows = document.querySelectorAll('[data-testid="today-feed"] li');
-    expect(rows[0].className).not.toContain('ring-2');
+    await waitFor(() => {
+      const rows = document.querySelectorAll('[data-testid="today-feed"] li');
+      expect(rows[0].className).not.toContain('ring-2');
+    });
   });
 
   it('keyboard shortcuts are suppressed when focus is inside an input', async () => {
