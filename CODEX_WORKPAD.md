@@ -96,3 +96,19 @@ Gemini secondary review:
   portfolio-readiness cleanup.
 - Blocked by `MODEL_CAPACITY_EXHAUSTED` / HTTP 429 for
   `gemini-3-flash-preview`; no Gemini findings were returned.
+
+PR handoff:
+
+- Opened upstream PR: https://github.com/tinyhumansai/openhuman/pull/1661
+- Initial pushed head: `ef7144a6`.
+- GitHub initially reported merge state `DIRTY`.
+- Merged `upstream/main` into `codex/operator-mvp-plan`, resolving the only
+  conflict in `app/src-tauri/Cargo.lock` to the upstream/package manifest
+  version `0.53.41`.
+- Reconciled pushed head: `df628c98`.
+- Post-merge pre-push hook passed `format:check`, `lint` with 31 existing
+  React compiler warnings, `compile`, `rust:check`, and
+  `lint:commands-tokens` using `CARGO_ENCODED_RUSTFLAGS='' RUSTC_WRAPPER=` to
+  avoid the local `ld64.lld` / `-ld_new` linker configuration failure.
+- GitHub now reports merge state `BLOCKED` and no checks at the time of this
+  note; generated `docs/architecture/` output remains intentionally untracked.
