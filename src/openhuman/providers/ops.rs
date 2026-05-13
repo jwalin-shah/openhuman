@@ -83,17 +83,7 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 /// Sanitize API error text by scrubbing secrets and truncating length.
 pub fn sanitize_api_error(input: &str) -> String {
     let scrubbed = scrub_secret_patterns(input);
-
-    if scrubbed.chars().count() <= MAX_API_ERROR_CHARS {
-        return scrubbed;
-    }
-
-    let mut end = MAX_API_ERROR_CHARS;
-    while end > 0 && !scrubbed.is_char_boundary(end) {
-        end -= 1;
-    }
-
-    format!("{}...", &scrubbed[..end])
+    crate::openhuman::util::truncate_with_ellipsis(&scrubbed, MAX_API_ERROR_CHARS)
 }
 
 const TRANSPORT_ERROR_MAX_CHARS: usize = 1200;
@@ -108,14 +98,7 @@ pub fn format_error_chain(err: &dyn std::error::Error) -> String {
     }
     let joined = parts.join(" | ");
     let scrubbed = scrub_secret_patterns(&joined);
-    if scrubbed.chars().count() <= TRANSPORT_ERROR_MAX_CHARS {
-        return scrubbed;
-    }
-    let mut end = TRANSPORT_ERROR_MAX_CHARS;
-    while end > 0 && !scrubbed.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &scrubbed[..end])
+    crate::openhuman::util::truncate_with_suffix(&scrubbed, TRANSPORT_ERROR_MAX_CHARS, "…")
 }
 
 /// Cause chain from [`anyhow::Error`] (e.g. responses fallback), scrubbed and length-limited.
@@ -126,21 +109,68 @@ pub fn format_anyhow_chain(err: &anyhow::Error) -> String {
         .collect::<Vec<_>>()
         .join(" | ");
     let scrubbed = scrub_secret_patterns(&joined);
-    if scrubbed.chars().count() <= TRANSPORT_ERROR_MAX_CHARS {
-        return scrubbed;
-    }
-    let mut end = TRANSPORT_ERROR_MAX_CHARS;
-    while end > 0 && !scrubbed.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &scrubbed[..end])
+    crate::openhuman::util::truncate_with_suffix(&scrubbed, TRANSPORT_ERROR_MAX_CHARS, "…")
+}
+
+/// Whether a non-2xx provider response is worth reporting to Sentry.
+///
+/// Transient upstream statuses — 429 Too Many Requests, 408 Request Timeout,
+/// and 502/503/504 gateway-layer failures — are caller-side throttling or
+/// upstream-capacity signals. The reliable-provider layer already retries
+/// with backoff and falls back across providers/models, and the aggregate
+/// "all providers exhausted" event still fires if every attempt fails.
+/// Reporting each individual transient failure floods Sentry (see
+/// OPENHUMAN-TAURI-6Y / 2E / 84 / T: thousands of events/day per user from
+/// a single upstream rate-limit / outage window). Callers should still
+/// propagate the error so retry and fallback logic runs unchanged; this
+/// only gates the per-attempt Sentry report.
+pub fn should_report_provider_http_failure(status: reqwest::StatusCode) -> bool {
+    !crate::core::observability::TRANSIENT_PROVIDER_HTTP_STATUSES.contains(&status.as_u16())
+}
+
+/// Whether a "Budget exceeded" error from `provider` at `status` should be
+/// suppressed from Sentry.
+///
+/// Suppression is scoped to `backend + 400` so that:
+/// - Other providers (OpenAI, Anthropic, …) whose 400 bodies happen to mention
+///   "Budget exceeded" still report.
+/// - Backend 5xx errors that mention "Budget exceeded" still report (server bug,
+///   not user-state).
+/// - Only the exact user-actionable signal from the OpenHuman backend — which
+///   the UI surfaces directly — is silenced.
+pub(super) fn is_budget_exceeded_suppressed(
+    provider: &str,
+    status: reqwest::StatusCode,
+    sanitized_body: &str,
+) -> bool {
+    provider == openhuman_backend::PROVIDER_LABEL
+        && matches!(
+            status,
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYMENT_REQUIRED
+        )
+        && sanitized_body
+            .to_ascii_lowercase()
+            .contains("budget exceeded")
 }
 
 /// Build a sanitized provider error from a failed HTTP response.
 ///
-/// Also reports the failure to Sentry with `provider` and `status` tags so
+/// Reports the failure to Sentry with `provider` and `status` tags so
 /// upstream LLM errors are visible in observability without every call-site
-/// having to remember to log.
+/// having to remember to log — except for:
+///
+/// - **Transient statuses** (429 — see [`should_report_provider_http_failure`]).
+///   These get retried by the reliable-provider layer and don't deserve a
+///   per-attempt Sentry event.
+/// - **401/403 from the OpenHuman backend provider** — the user's app session
+///   expired. That is expected user-state, not a server bug, and reporting it
+///   spams Sentry (OPENHUMAN-TAURI-1T: 5,414 events from a single user whose
+///   cron loops kept firing post-expiry). Instead we publish a
+///   [`crate::core::event_bus::DomainEvent::SessionExpired`] so the credentials
+///   subscriber clears the session and flips the scheduler-gate signed-out
+///   override, halting downstream LLM work. 401/403 from **other** providers
+///   (OpenAI, Anthropic, …) still go to Sentry — those mean a misconfigured
+///   API key, which is actionable.
 pub async fn api_error(provider: &str, response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
     let status_str = status.as_u16().to_string();
@@ -150,16 +180,50 @@ pub async fn api_error(provider: &str, response: reqwest::Response) -> anyhow::E
         .unwrap_or_else(|_| "<failed to read provider error body>".to_string());
     let sanitized = sanitize_api_error(&body);
     let message = format!("{provider} API error ({status}): {sanitized}");
-    crate::core::observability::report_error(
-        message.as_str(),
-        "llm_provider",
-        "api_error",
-        &[
-            ("provider", provider),
-            ("status", status_str.as_str()),
-            ("failure", "non_2xx"),
-        ],
-    );
+
+    let is_auth_failure = matches!(status.as_u16(), 401 | 403);
+    let is_backend = provider == openhuman_backend::PROVIDER_LABEL;
+    let is_budget_exceeded_user_state = is_budget_exceeded_suppressed(provider, status, &sanitized);
+
+    if is_auth_failure && is_backend {
+        tracing::warn!(
+            domain = "llm_provider",
+            operation = "api_error",
+            provider = provider,
+            status = status_str.as_str(),
+            "[llm_provider] backend auth failure ({status}) — publishing SessionExpired"
+        );
+        // `message` already embeds the sanitized body via
+        // `sanitize_api_error(&body)`, but the leading `{provider} API
+        // error ({status})` prefix and any caller-controlled provider
+        // name aren't scrubbed — re-run sanitize on the final string so
+        // the SessionExpired subscriber's logs never persist secrets.
+        crate::core::event_bus::publish_global(
+            crate::core::event_bus::DomainEvent::SessionExpired {
+                source: "llm_provider.openhuman_backend".to_string(),
+                reason: sanitize_api_error(&message),
+            },
+        );
+    } else if is_budget_exceeded_user_state {
+        tracing::info!(
+            domain = "llm_provider",
+            operation = "api_error",
+            provider = provider,
+            status = status_str.as_str(),
+            "[llm_provider] budget-exceeded response suppressed from Sentry (user-actionable, not a bug)"
+        );
+    } else if should_report_provider_http_failure(status) {
+        crate::core::observability::report_error(
+            message.as_str(),
+            "llm_provider",
+            "api_error",
+            &[
+                ("provider", provider),
+                ("status", status_str.as_str()),
+                ("failure", "non_2xx"),
+            ],
+        );
+    }
     anyhow::anyhow!(message)
 }
 
@@ -366,5 +430,124 @@ mod tests {
             create_backend_inference_provider(None, None, &ProviderRuntimeOptions::default())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn skips_sentry_report_for_transient_upstream_statuses() {
+        // Transient statuses — 429 rate-limit, 408 client timeout, and 502/503/504
+        // gateway-layer failures — are retried by reliable.rs. The aggregate
+        // "all providers exhausted" event still fires for genuine outages.
+        // Reporting each attempt individually floods Sentry (OPENHUMAN-TAURI-2E
+        // ~1393 events, 84 ~1050 events, T ~871 events).
+        for transient in [
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::REQUEST_TIMEOUT,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            reqwest::StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            assert!(
+                !should_report_provider_http_failure(transient),
+                "transient status {transient} must not trigger per-attempt Sentry report"
+            );
+        }
+        // Auth + permanent server faults remain reportable — those are
+        // misconfiguration or genuine bugs, not transient capacity issues.
+        for reportable in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(
+                should_report_provider_http_failure(reportable),
+                "status {reportable} must still report to Sentry"
+            );
+        }
+    }
+
+    // Confirm the Budget-exceeded suppression predicate is scoped correctly.
+    // These tests exercise the real production function, not a duplicate.
+    mod budget_exceeded_suppression {
+        use super::*;
+
+        const BACKEND: &str = openhuman_backend::PROVIDER_LABEL; // "OpenHuman"
+        const OTHER: &str = "OpenAI";
+        const BUDGET_BODY: &str = "Budget exceeded: you have no credits remaining";
+        const UNRELATED_BODY: &str = "Invalid request: model not found";
+
+        #[test]
+        fn backend_400_budget_exceeded_is_suppressed() {
+            assert!(is_budget_exceeded_suppressed(
+                BACKEND,
+                reqwest::StatusCode::BAD_REQUEST,
+                BUDGET_BODY,
+            ));
+        }
+
+        #[test]
+        fn other_provider_400_budget_exceeded_is_not_suppressed() {
+            // A third-party provider whose body happens to say "Budget exceeded"
+            // should still be reported to Sentry — only the backend gets special
+            // treatment.
+            assert!(!is_budget_exceeded_suppressed(
+                OTHER,
+                reqwest::StatusCode::BAD_REQUEST,
+                BUDGET_BODY,
+            ));
+        }
+
+        #[test]
+        fn backend_500_budget_exceeded_is_not_suppressed() {
+            // A 500 is a server bug, not expected user-state — keep reporting.
+            assert!(!is_budget_exceeded_suppressed(
+                BACKEND,
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                BUDGET_BODY,
+            ));
+        }
+
+        #[test]
+        fn backend_400_unrelated_body_is_not_suppressed() {
+            assert!(!is_budget_exceeded_suppressed(
+                BACKEND,
+                reqwest::StatusCode::BAD_REQUEST,
+                UNRELATED_BODY,
+            ));
+        }
+
+        #[test]
+        fn backend_402_budget_exceeded_is_suppressed() {
+            // 402 Payment Required is a valid alternative status the backend may
+            // return for the same user-state (no credits); it should be suppressed
+            // just like 400.
+            assert!(is_budget_exceeded_suppressed(
+                BACKEND,
+                reqwest::StatusCode::PAYMENT_REQUIRED,
+                BUDGET_BODY,
+            ));
+        }
+
+        #[test]
+        fn backend_402_budget_exceeded_case_insensitive() {
+            // Body casing should not affect suppression — e.g. "budget exceeded"
+            // (all-lowercase) from a future backend change.
+            assert!(is_budget_exceeded_suppressed(
+                BACKEND,
+                reqwest::StatusCode::PAYMENT_REQUIRED,
+                "budget exceeded: no credits",
+            ));
+        }
+    }
+
+    #[test]
+    fn test_sanitize_api_error_utf8() {
+        let input = "🦀".repeat(MAX_API_ERROR_CHARS + 10);
+        let sanitized = sanitize_api_error(&input);
+        assert!(sanitized.ends_with("..."));
+        // Should truncate at MAX_API_ERROR_CHARS crabs
+        let crabs_count = sanitized.chars().filter(|c| *c == '🦀').count();
+        assert_eq!(crabs_count, MAX_API_ERROR_CHARS);
     }
 }
