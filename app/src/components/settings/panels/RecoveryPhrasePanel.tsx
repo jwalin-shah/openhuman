@@ -41,13 +41,14 @@ const RecoveryPhrasePanel = () => {
     }
   }, [copied]);
 
-  useEffect(() => {
+  const switchMode = useCallback((nextMode: 'generate' | 'import') => {
+    setMode(nextMode);
     setConfirmed(false);
     setError(null);
     setImportValid(null);
     setSelectedWordCount(IMPORT_SLOTS_INITIAL);
     setImportWords(Array(IMPORT_SLOTS_INITIAL).fill(''));
-  }, [mode]);
+  }, []);
 
   const handleWordCountChange = useCallback((count: number) => {
     setSelectedWordCount(count);
@@ -298,7 +299,7 @@ const RecoveryPhrasePanel = () => {
                   </button>
 
                   <button
-                    onClick={() => setMode('import')}
+                    onClick={() => switchMode('import')}
                     className="w-full text-center text-sm text-primary-400 hover:text-primary-600 transition-colors mb-3">
                     I already have a recovery phrase
                   </button>
@@ -387,7 +388,7 @@ const RecoveryPhrasePanel = () => {
                   )}
 
                   <button
-                    onClick={() => setMode('generate')}
+                    onClick={() => switchMode('generate')}
                     className="w-full text-center text-sm text-primary-400 hover:text-primary-600 transition-colors mb-3">
                     Generate a new recovery phrase instead
                   </button>
