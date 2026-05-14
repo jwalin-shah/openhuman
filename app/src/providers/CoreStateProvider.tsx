@@ -385,7 +385,7 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
           );
           if (shouldWarnForBootstrapFailure(bootstrapFailCountRef.current)) {
             console.warn(
-              `[core-state] poll failed (attempt ${bootstrapFailCountRef.current}/${MAX_BOOTSTRAP_RETRIES}):`,
+              `[core-state] poll failed (attempt ${bootstrapFailCountRef.current}):`,
               safe
             );
           }

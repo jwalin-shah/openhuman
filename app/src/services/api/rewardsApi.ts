@@ -1,6 +1,10 @@
+import debugFactory from 'debug';
+
 import type { ApiResponse } from '../../types/api';
 import type { RewardsAchievement, RewardsSnapshot } from '../../types/rewards';
 import { apiClient } from '../apiClient';
+
+const log = debugFactory('rewards-api');
 
 const REWARDS_REQUEST_TIMEOUT_MS = 15_000;
 const REWARDS_TIMEOUT_MESSAGE =
@@ -47,13 +51,7 @@ function errorText(error: unknown): string {
 
 function isTimeoutError(error: unknown): boolean {
   const text = errorText(error).toLowerCase();
-  return (
-    text.includes('timed out') ||
-    text.includes('timeout') ||
-    text.includes('err_timed_out') ||
-    text.includes('aborterror') ||
-    text.includes('aborted')
-  );
+  return text.includes('timed out') || text.includes('timeout') || text.includes('err_timed_out');
 }
 
 function normalizeAchievement(value: unknown): RewardsAchievement {
@@ -133,25 +131,27 @@ export const rewardsApi = {
       response = await apiClient.get<ApiResponse<unknown>>('/rewards/me', {
         timeout: REWARDS_REQUEST_TIMEOUT_MS,
       });
-      if (!response.success) {
-        throw {
-          success: false,
-          error: response.error ?? response.message ?? 'Unable to load rewards',
-        };
-      }
     } catch (error) {
       const message = isTimeoutError(error)
         ? REWARDS_TIMEOUT_MESSAGE
         : errorText(error) || 'Unable to load rewards';
-      console.debug('[rewards] backend snapshot unavailable', { message });
+      log('backend snapshot unavailable message=%s', message);
       throw { success: false, error: message };
     }
 
-    console.debug('[rewards] loaded backend snapshot', {
-      achievementCount: Array.isArray((response.data as { achievements?: unknown[] })?.achievements)
-        ? (response.data as { achievements: unknown[] }).achievements.length
-        : 0,
-    });
+    if (!response.success) {
+      throw {
+        success: false,
+        error: response.error ?? response.message ?? 'Unable to load rewards',
+      };
+    }
+
+    const achievementCount = Array.isArray(
+      (response.data as { achievements?: unknown[] })?.achievements
+    )
+      ? (response.data as { achievements: unknown[] }).achievements.length
+      : 0;
+    log('loaded backend snapshot achievementCount=%d', achievementCount);
     return normalizeRewardsSnapshot(response.data);
   },
 };

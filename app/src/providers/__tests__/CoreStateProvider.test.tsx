@@ -220,11 +220,11 @@ describe('CoreStateProvider — identity-change cache clearing', () => {
   });
 
   it('rate-limits repeated bootstrap poll warnings to useful checkpoints', () => {
-    const warnedAttempts = Array.from({ length: 12 }, (_, index) => index + 1).filter(
+    const warnedAttempts = Array.from({ length: 16 }, (_, index) => index + 1).filter(
       shouldWarnForBootstrapFailure
     );
 
-    expect(warnedAttempts).toEqual([1, 5, 10]);
+    expect(warnedAttempts).toEqual([1, 5, 10, 15]);
   });
 
   it('backfills snapshot.currentUser from auth.user when currentUser is missing', async () => {
