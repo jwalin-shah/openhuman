@@ -1,19 +1,37 @@
-import { useState } from 'react';
+import { ReactNode, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useCoreState } from '../../providers/CoreStateProvider';
-import { persistor } from '../../store';
+import { clearAllAppData } from '../../utils/clearAllAppData';
 import { BILLING_DASHBOARD_URL } from '../../utils/links';
 import { openUrl } from '../../utils/openUrl';
-import {
-  resetOpenHumanDataAndRestartCore,
-  restartApp,
-  scheduleCefProfilePurge,
-} from '../../utils/tauriCommands';
 import { resetWalkthrough } from '../walkthrough/AppWalkthrough';
 import SettingsHeader from './components/SettingsHeader';
 import SettingsMenuItem from './components/SettingsMenuItem';
 import { useSettingsNavigation } from './hooks/useSettingsNavigation';
+
+interface SettingsSection {
+  label: string;
+  items: SettingsItem[];
+}
+
+interface SettingsItem {
+  id: string;
+  title: string;
+  description: string;
+  icon: ReactNode;
+  onClick: () => void;
+  dangerous?: boolean;
+}
+
+// Subtle uppercase section header label separating settings groups
+const SectionHeader = ({ label }: { label: string }) => (
+  <div className="px-4 pt-5 pb-1">
+    <span className="text-[10px] font-semibold tracking-widest uppercase text-stone-400">
+      {label}
+    </span>
+  </div>
+);
 
 const SettingsHome = () => {
   const navigate = useNavigate();
@@ -32,60 +50,12 @@ const SettingsHome = () => {
     }
   };
 
-  const clearAllAppData = async () => {
-    const currentUserId = snapshot.auth.userId ?? snapshot.currentUser?._id ?? null;
-
-    // Queue the current user-scoped CEF profile for deletion on next launch.
-    // The active CEF browser process may still hold SQLite/cache file handles,
-    // so we delete after the shell restarts rather than relying on in-process
-    // removal to succeed everywhere.
-    try {
-      await scheduleCefProfilePurge(currentUserId);
-    } catch (err) {
-      console.warn('[Settings] Failed to queue CEF profile purge:', err);
-    }
-
-    // 1. Logout — clear session in core (auth_clear_session). Best-effort:
-    //    if the core process is wedged we still want to wipe local data.
-    try {
-      await clearSession();
-    } catch (err) {
-      console.warn('[Settings] Rust logout failed during clearAllAppData:', err);
-    }
-
-    // 2. Delete workspace folder + restart core. The core RPC removes both
-    //    the active openhuman_dir and the default ~/.openhuman, then we
-    //    restart the sidecar so it boots from a clean slate.
-    try {
-      await resetOpenHumanDataAndRestartCore();
-    } catch (err) {
-      console.warn('[Settings] Failed to reset OpenHuman data dir and restart core:', err);
-      throw err;
-    }
-
-    // 3. Purge redux-persist storage + browser storage. `persistor.purge()`
-    //    wipes the persisted backend; localStorage/sessionStorage clears
-    //    everything else (auth flags, theme, etc.).
-    try {
-      await persistor.purge();
-    } catch (err) {
-      console.warn('[Settings] persistor.purge failed:', err);
-      setError('Failed to clear persisted app state. Please try again.');
-      return;
-    }
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-
-    // 4. Full app restart so the CEF runtime reboots into the fresh
-    //    pre-login profile instead of keeping the old browser process alive.
-    await restartApp();
-  };
-
   const handleLogoutAndClearData = async () => {
     try {
       setIsLoading(true);
       setError(null);
-      await clearAllAppData(); // This will redirect to login
+      const currentUserId = snapshot.auth.userId ?? snapshot.currentUser?._id ?? null;
+      await clearAllAppData({ clearSession, userId: currentUserId }); // restarts the app
     } catch (_error) {
       setError('Failed to clear data and logout. Please try again.');
     } finally {
@@ -93,157 +63,201 @@ const SettingsHome = () => {
     }
   };
 
-  // const handleViewEncryptionKey = () => {
-  //   // TODO: Show encryption key in a secure modal
-  //   console.log('View encryption key');
-  // };
-
-  const groupedMenuItems = [
+  const settingsSections: SettingsSection[] = [
     {
-      id: 'account',
-      title: 'Account',
-      description: 'Recovery phrase, team, connections, and privacy',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('account'),
-      dangerous: false,
+      label: 'General',
+      items: [
+        {
+          id: 'account',
+          title: 'Account',
+          description: 'Recovery phrase, team, connections, and privacy',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('account'),
+        },
+        {
+          id: 'notifications',
+          title: 'Notifications',
+          description: 'Do Not Disturb and per-account notification controls',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('notifications'),
+        },
+        {
+          id: 'mascot',
+          title: 'Mascot',
+          description: 'Pick the mascot color used across the app',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 21a9 9 0 100-18 9 9 0 000 18zM9 10h.01M15 10h.01M9.5 15c.83.67 1.67 1 2.5 1s1.67-.33 2.5-1"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('mascot'),
+        },
+      ],
     },
     {
-      id: 'billing',
-      title: 'Billing & Usage',
-      description: 'Subscription plan, credits, and payment methods',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H5a3 3 0 00-3 3v8a3 3 0 003 3z"
-          />
-        </svg>
-      ),
-      onClick: () => {
-        void openUrl(BILLING_DASHBOARD_URL);
-      },
-      dangerous: false,
+      label: 'Features & AI',
+      items: [
+        {
+          id: 'features',
+          title: 'Features',
+          description: 'Screen awareness, messaging, and tools',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13 10V3L4 14h7v7l9-11h-7z"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('features'),
+        },
+        {
+          id: 'ai-models',
+          title: 'AI & Models',
+          description: 'Local AI model setup, downloads, and LLM provider',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('ai-models'),
+        },
+      ],
     },
     {
-      id: 'features',
-      title: 'Features',
-      description: 'Screen awareness, messaging, and tools',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M13 10V3L4 14h7v7l9-11h-7z"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('features'),
-      dangerous: false,
+      label: 'Billing & Rewards',
+      items: [
+        {
+          id: 'billing',
+          title: 'Billing & Usage',
+          description: 'Subscription plan, credits, and payment methods',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H5a3 3 0 00-3 3v8a3 3 0 003 3z"
+              />
+            </svg>
+          ),
+          onClick: () => {
+            openUrl(BILLING_DASHBOARD_URL).catch(() => {});
+          },
+        },
+        {
+          id: 'rewards',
+          title: 'Rewards',
+          description: 'Referrals, coupons, and earned credits',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"
+              />
+            </svg>
+          ),
+          onClick: () => navigate('/rewards'),
+        },
+      ],
     },
     {
-      id: 'ai-models',
-      title: 'AI & Models',
-      description: 'Local AI model setup and downloads',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('ai-models'),
-      dangerous: false,
+      label: 'Support',
+      items: [
+        {
+          id: 'restart-tour',
+          title: 'Restart Tour',
+          description: 'Replay the product walkthrough from the beginning',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+          ),
+          onClick: () => {
+            resetWalkthrough();
+            navigate('/home');
+          },
+        },
+        {
+          id: 'about',
+          title: 'About',
+          description: 'App version and software updates',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('about'),
+        },
+      ],
     },
     {
-      id: 'notifications',
-      title: 'Notifications',
-      description: 'Do Not Disturb and per-account notification controls',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('notifications'),
-      dangerous: false,
-    },
-    {
-      id: 'restart-tour',
-      title: 'Restart Tour',
-      description: 'Replay the product walkthrough from the beginning',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-          />
-        </svg>
-      ),
-      onClick: () => {
-        resetWalkthrough();
-        navigate('/home');
-      },
-      dangerous: false,
-    },
-    {
-      id: 'about',
-      title: 'About',
-      description: 'App version and software updates',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('about'),
-      dangerous: false,
-    },
-    {
-      id: 'developer-options',
-      title: 'Developer Options',
-      description: 'Diagnostics, debug panels, webhooks, and memory inspection',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
-          />
-        </svg>
-      ),
-      onClick: () => navigateToSettings('developer-options'),
-      dangerous: false,
+      label: 'Advanced',
+      items: [
+        {
+          id: 'developer-options',
+          title: 'Developer Options',
+          description: 'Diagnostics, debug panels, webhooks, and memory inspection',
+          icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+              />
+            </svg>
+          ),
+          onClick: () => navigateToSettings('developer-options'),
+        },
+      ],
     },
   ];
 
-  // Destructive actions menu items
-  const destructiveMenuItems = [
+  // Destructive actions — rendered separately under "Danger Zone" heading
+  const destructiveItems: SettingsItem[] = [
     {
       id: 'logout-and-clear',
       title: 'Clear App Data',
@@ -287,22 +301,28 @@ const SettingsHome = () => {
       </div>
 
       <div>
-        {/* Grouped Settings */}
-        {groupedMenuItems.map((item, index) => (
-          <SettingsMenuItem
-            key={item.id}
-            icon={item.icon}
-            title={item.title}
-            description={item.description}
-            onClick={item.onClick}
-            dangerous={item.dangerous}
-            isFirst={index === 0}
-            // isLast={index === groupedMenuItems.length - 1}
-          />
+        {/* Grouped sections with section headers */}
+        {settingsSections.map(section => (
+          <div key={section.label}>
+            <SectionHeader label={section.label} />
+            {section.items.map((item, index) => (
+              <SettingsMenuItem
+                key={item.id}
+                icon={item.icon}
+                title={item.title}
+                description={item.description}
+                onClick={item.onClick}
+                dangerous={item.dangerous}
+                isFirst={index === 0}
+                isLast={index === section.items.length - 1}
+              />
+            ))}
+          </div>
         ))}
 
-        {/* Destructive Actions */}
-        {destructiveMenuItems.map((item, index) => (
+        {/* Danger Zone */}
+        <SectionHeader label="Danger Zone" />
+        {destructiveItems.map((item, index) => (
           <SettingsMenuItem
             key={item.id}
             icon={item.icon}
@@ -311,7 +331,7 @@ const SettingsHome = () => {
             onClick={item.onClick}
             dangerous={item.dangerous}
             isFirst={index === 0}
-            isLast={index === destructiveMenuItems.length - 1}
+            isLast={index === destructiveItems.length - 1}
           />
         ))}
       </div>

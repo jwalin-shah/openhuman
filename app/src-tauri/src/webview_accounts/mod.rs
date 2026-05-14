@@ -88,7 +88,17 @@ fn provider_allowed_hosts(provider: &str) -> &'static [&'static str] {
     match provider {
         "whatsapp" => &["whatsapp.com", "whatsapp.net", "wa.me"],
         "telegram" => &["telegram.org", "t.me"],
-        "linkedin" => &["linkedin.com", "licdn.com"],
+        "linkedin" => &[
+            "linkedin.com",
+            "licdn.com",
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ],
         "slack" => &[
             "slack.com",
             "slack-edge.com",
@@ -113,7 +123,19 @@ fn provider_allowed_hosts(provider: &str) -> &'static [&'static str] {
             "gstatic.com",
             "googleapis.com",
         ],
-        "zoom" => &["zoom.us", "zoom.com", "zoomgov.com", "zdassets.com"],
+        "zoom" => &[
+            "zoom.us",
+            "zoom.com",
+            "zoomgov.com",
+            "zdassets.com",
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ],
         "browserscan" => &["browserscan.net"],
         _ => &[],
     }
@@ -234,6 +256,28 @@ fn popup_should_stay_in_app(provider: &str, url: &Url) -> bool {
                 None => false,
             }
         }
+        "linkedin" => {
+            // LinkedIn's "Sign in with Google" button is rendered as a Google
+            // Identity Services (GSI) iframe loaded from
+            // `accounts.google.com/gsi/button`. When the user clicks it, GSI
+            // calls `window.open("https://accounts.google.com/gsi/select?...",
+            // "gsig", "width=500,height=600,...")` to show the account chooser.
+            //
+            // This popup MUST stay as a real in-app child window — NOT routed
+            // to the system browser (blank screen) and NOT a parent navigation
+            // (the parent page would be replaced, so the postMessage credential
+            // callback from the popup can never reach LinkedIn's JS handler).
+            //
+            // After the user selects an account the popup postMessages the
+            // signed credential back to the opener; LinkedIn's GSI callback
+            // receives it and completes sign-in (#1021).
+            match url.host_str() {
+                Some(host) => {
+                    is_google_sso_host(host) && url.path().to_ascii_lowercase().contains("gsi")
+                }
+                None => false,
+            }
+        }
         _ => false,
     }
 }
@@ -275,7 +319,7 @@ fn is_provider_native_deep_link_scheme(scheme: &str) -> bool {
 /// `accounts.google.com` popups should be listed. Other providers
 /// continue to fall through to the default popup-handling path.
 fn provider_supports_google_sso(provider: &str) -> bool {
-    matches!(provider, "google-meet" | "slack")
+    matches!(provider, "google-meet" | "slack" | "zoom" | "linkedin")
 }
 
 /// `true` if a popup request should be denied AND the parent webview
@@ -374,6 +418,7 @@ fn is_google_auth_popup(url: &Url) -> bool {
         || path.contains("accountchooser")
         || path.contains("chooseaccount")
         || path.contains("setsid")
+        || path.contains("oauth2")
     {
         return true;
     }
@@ -387,7 +432,8 @@ fn is_google_auth_popup(url: &Url) -> bool {
                 || v.contains("accountchooser")
                 || v.contains("chooseaccount")
                 || v.contains("meet.google.com")
-                || v.contains("mail.google.com"))
+                || v.contains("mail.google.com")
+                || v.contains("linkedin.com"))
     })
 }
 
@@ -1434,7 +1480,7 @@ pub struct WebviewEvent {
 /// OAuth callback codes, sometimes session tokens) and we don't want those
 /// to land in the long-lived shell log file. Returns the original input on
 /// parse failure so we still surface *something* useful for debugging.
-fn redact_url_for_log(raw: &str) -> String {
+pub(crate) fn redact_url_for_log(raw: &str) -> String {
     match Url::parse(raw) {
         Ok(mut u) => {
             u.set_query(None);
@@ -3342,6 +3388,182 @@ mod tests {
     }
 
     #[test]
+    fn zoom_allowed_hosts_covers_google_oauth() {
+        // Zoom's "Sign in with Google" reroutes the popup into the
+        // embedded webview (see popup_should_navigate_parent). The
+        // resulting accounts.google.com / oauth2.googleapis.com /
+        // www.googleapis.com hops MUST be classified internal so the
+        // auth chain doesn't escape to the system browser mid-flight
+        // and trigger Zoom error 300 (#1294).
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://accounts.google.com/v3/signin/identifier"),
+        ));
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://oauth2.googleapis.com/token"),
+        ));
+        assert!(url_is_internal(
+            "zoom",
+            &url("https://www.googleapis.com/oauth2/v3/userinfo"),
+        ));
+    }
+
+    #[test]
+    fn zoom_supports_google_sso() {
+        // Zoom's web client offers "Sign in with Google" via a popup
+        // window.open("https://accounts.google.com/..."). The popup
+        // gate at popup_should_navigate_parent gates on this helper —
+        // without zoom listed the popup falls through to the system
+        // browser and breaks the auth callback (#1294).
+        assert!(provider_supports_google_sso("zoom"));
+    }
+
+    #[test]
+    fn zoom_popup_navigates_parent_for_google_sso() {
+        // Mirror of slack_google_signin_popup_navigates_parent —
+        // clicking "Sign in with Google" inside Zoom MUST replace the
+        // parent webview's URL instead of escaping to the system
+        // browser, so the Google session cookie lands in the per-account
+        // CEF profile (#1294).
+        assert_eq!(
+            popup_should_navigate_parent(
+                "zoom",
+                &url("https://accounts.google.com/v3/signin/identifier"),
+            )
+            .map(|u| u.to_string()),
+            Some("https://accounts.google.com/v3/signin/identifier".to_string())
+        );
+    }
+
+    // ── LinkedIn Google SSO (issue #1021) ──────────────────────────────
+
+    #[test]
+    fn linkedin_supports_google_sso() {
+        // LinkedIn's "Sign in with Google" button must be handled in-app;
+        // without linkedin in provider_supports_google_sso the popup falls
+        // through to the system browser, which opens blank (#1021).
+        assert!(provider_supports_google_sso("linkedin"));
+    }
+
+    #[test]
+    fn linkedin_allowed_hosts_cover_google_oauth() {
+        // Google auth chain hops through oauth2.googleapis.com and
+        // www.googleapis.com which are not Google SSO hosts and must be
+        // present in the explicit allowlist so mid-flight redirects don't
+        // leak to the system browser.
+        let hosts = provider_allowed_hosts("linkedin");
+        for host in [
+            "accounts.google.com",
+            "accounts.googleusercontent.com",
+            "ssl.gstatic.com",
+            "fonts.gstatic.com",
+            "lh3.googleusercontent.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+        ] {
+            assert!(hosts.contains(&host), "{host} in LinkedIn allowlist");
+        }
+    }
+
+    #[test]
+    fn linkedin_google_signin_popup_navigates_parent() {
+        // Clicking "Sign in with Google" on LinkedIn's login page issues a
+        // window.open to accounts.google.com/signin/... — must navigate the
+        // parent in-app instead of opening the system browser (#1021).
+        assert_eq!(
+            popup_should_navigate_parent(
+                "linkedin",
+                &url("https://accounts.google.com/v3/signin/identifier"),
+            )
+            .map(|u| u.to_string()),
+            Some("https://accounts.google.com/v3/signin/identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn linkedin_google_oauth2_popup_navigates_parent() {
+        // LinkedIn may issue window.open to the initial OAuth2 auth
+        // endpoint (/o/oauth2/v2/auth) which doesn't contain "signin"
+        // in the path — must still be caught and routed in-app (#1021).
+        assert!(popup_should_navigate_parent(
+            "linkedin",
+            &url("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=https://www.linkedin.com/..."),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn linkedin_google_sso_navigation_is_internal() {
+        // Direct (non-popup) navigation to accounts.google.com during the
+        // LinkedIn Google SSO flow must be classified internal so it stays
+        // in the embedded webview.
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://accounts.google.com/v3/signin/identifier"),
+        ));
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://accounts.youtube.com/accounts/SetSID?..."),
+        ));
+    }
+
+    #[test]
+    fn linkedin_own_domain_still_internal() {
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://www.linkedin.com/messaging/"),
+        ));
+        assert!(url_is_internal(
+            "linkedin",
+            &url("https://media.licdn.com/dms/image/foo.jpg"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_unrelated_popup_still_goes_to_system_browser() {
+        // Non-Google external links from LinkedIn must still route out.
+        assert!(
+            popup_should_navigate_parent("linkedin", &url("https://example.com/blog"),).is_none()
+        );
+        assert!(!popup_should_stay_in_app(
+            "linkedin",
+            &url("https://example.com/blog"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_gsi_popup_stays_in_app() {
+        // LinkedIn's "Sign in with Google" uses the Google Identity Services
+        // (GSI) library. The GSI button iframe (accounts.google.com/gsi/button)
+        // calls window.open("accounts.google.com/gsi/select?...") to show the
+        // account chooser. This popup must be an in-app child window — NOT sent
+        // to the system browser (blank screen) and NOT a parent navigation (the
+        // postMessage credential callback would have no opener to reach) (#1021).
+        assert!(popup_should_stay_in_app(
+            "linkedin",
+            &url(
+                "https://accounts.google.com/gsi/select?client_id=990339570472-k6nq&ux_mode=popup"
+            ),
+        ));
+        assert!(popup_should_stay_in_app(
+            "linkedin",
+            &url("https://accounts.google.com/gsi/issue?client_id=x"),
+        ));
+    }
+
+    #[test]
+    fn linkedin_gsi_popup_does_not_navigate_parent() {
+        // The GSI account-chooser popup must NOT navigate the parent — it needs
+        // to remain a child popup for postMessage to work.
+        assert!(popup_should_navigate_parent(
+            "linkedin",
+            &url("https://accounts.google.com/gsi/select?client_id=x"),
+        )
+        .is_none());
+    }
+
+    #[test]
     fn slack_allowed_hosts_include_google_oauth() {
         let hosts = provider_allowed_hosts("slack");
         for host in [
@@ -3689,7 +3911,17 @@ mod tests {
         // the popup-takeover path. Every other provider (and any unknown
         // string) must fall through to the default popup handling.
         assert!(popup_should_navigate_parent(
-            "linkedin",
+            "discord",
+            &url("https://accounts.google.com/signin/v2/identifier"),
+        )
+        .is_none());
+        assert!(popup_should_navigate_parent(
+            "whatsapp",
+            &url("https://accounts.google.com/signin/v2/identifier"),
+        )
+        .is_none());
+        assert!(popup_should_navigate_parent(
+            "unknown-provider",
             &url("https://accounts.google.com/signin/v2/identifier"),
         )
         .is_none());
@@ -3800,11 +4032,11 @@ mod tests {
     fn provider_supports_google_sso_matrix() {
         assert!(provider_supports_google_sso("google-meet"));
         assert!(provider_supports_google_sso("slack"));
+        assert!(provider_supports_google_sso("zoom"));
+        assert!(provider_supports_google_sso("linkedin"));
         assert!(!provider_supports_google_sso("whatsapp"));
         assert!(!provider_supports_google_sso("telegram"));
-        assert!(!provider_supports_google_sso("linkedin"));
         assert!(!provider_supports_google_sso("discord"));
-        assert!(!provider_supports_google_sso("zoom"));
         assert!(!provider_supports_google_sso("browserscan"));
         assert!(!provider_supports_google_sso(""));
         assert!(!provider_supports_google_sso("unknown-provider"));

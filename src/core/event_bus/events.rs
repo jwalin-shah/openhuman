@@ -353,6 +353,55 @@ pub enum DomainEvent {
         routed: bool,
     },
 
+    // ── Memory tree ─────────────────────────────────────────────────────
+    /// A document (chat batch, email thread, or standalone document) was
+    /// fully canonicalised and its chunks written to the memory tree.
+    ///
+    /// Emitted by `memory::tree::ingest::persist()` after the chunk upsert
+    /// and extract-job enqueue complete. Subscribers (Phase 2 producers such
+    /// as the email-signature parser) react to this to inspect the
+    /// canonicalised content.
+    DocumentCanonicalized {
+        /// The source identifier passed to the ingest call (e.g. `"gmail:abc"`,
+        /// `"conversations:agent"`).
+        source_id: String,
+        /// Kind of content — `"chat"`, `"email"`, `"document"`.
+        source_kind: String,
+        /// Number of chunks written to `vector_chunks` in this ingest.
+        chunks_written: usize,
+        /// IDs of the chunks that were written.
+        chunk_ids: Vec<String>,
+        /// Wall-clock seconds since epoch when canonicalisation completed.
+        canonicalized_at: f64,
+        /// Last ≤ 2 048 characters of the canonicalised markdown body.
+        ///
+        /// Populated for `email` and `document` sources so that lightweight
+        /// subscribers (e.g. the email-signature parser) can inspect trailing
+        /// content without hitting disk. `None` for `chat` sources where the
+        /// content is conversational and doesn't contain signature-style structure.
+        body_preview: Option<String>,
+    },
+
+    // ── Learning ─────────────────────────────────────────────────────────
+    /// The stability detector finished a full cache rebuild cycle.
+    ///
+    /// Emitted by `learning::stability_detector` (Phase 3) after writing
+    /// the new snapshot to `user_profile_facets`. Subscribers (Phase 4
+    /// `profile_md_renderer`) react to re-render the `PROFILE.md` managed
+    /// blocks.
+    CacheRebuilt {
+        /// Number of facets added in this cycle.
+        added: usize,
+        /// Number of facets evicted (below τ_evict threshold) in this cycle.
+        evicted: usize,
+        /// Number of facets unchanged / carried over.
+        kept: usize,
+        /// Total facets in the cache after the rebuild.
+        total_size: usize,
+        /// Wall-clock seconds since epoch when the rebuild completed.
+        rebuilt_at: f64,
+    },
+
     // ── System lifecycle ────────────────────────────────────────────────
     /// A system component started up.
     SystemStartup { component: String },
@@ -372,6 +421,19 @@ pub enum DomainEvent {
     },
     /// A component restart was observed.
     HealthRestarted { component: String },
+
+    // ── Auth ────────────────────────────────────────────────────────────
+    /// The local app session is no longer valid — typically detected when
+    /// the backend returns 401 to an LLM inference call or a JSON-RPC
+    /// method. Subscribers tear down the session and pause background
+    /// LLM-bound work until the user signs back in.
+    ///
+    /// `source` is a short slug (e.g. `"llm_provider.openhuman_backend"`,
+    /// `"jsonrpc.invoke_method"`) so subscribers and logs can attribute
+    /// the trigger. `reason` is the sanitized error message that caused
+    /// detection (already redacted by the call site) — surfaced to logs,
+    /// never to Sentry or the UI verbatim.
+    SessionExpired { source: String, reason: String },
 }
 
 impl DomainEvent {
@@ -389,7 +451,10 @@ impl DomainEvent {
             | Self::MemoryRecalled { .. }
             | Self::MemorySyncRequested { .. }
             | Self::MemoryIngestionStarted { .. }
-            | Self::MemoryIngestionCompleted { .. } => "memory",
+            | Self::MemoryIngestionCompleted { .. }
+            | Self::DocumentCanonicalized { .. } => "memory",
+
+            Self::CacheRebuilt { .. } => "learning",
 
             Self::ChannelInboundMessage { .. }
             | Self::ChannelMessageReceived { .. }
@@ -438,6 +503,8 @@ impl DomainEvent {
             | Self::SystemShutdownRequested { .. }
             | Self::HealthChanged { .. }
             | Self::HealthRestarted { .. } => "system",
+
+            Self::SessionExpired { .. } => "auth",
         }
     }
 }

@@ -127,7 +127,7 @@ describe('ChatRuntimeProvider — dedupe, proactive resolution, mid-turn invaria
       expect(usage.turns).toBe(1);
 
       // Snapshot refetch fired exactly once on the first chat_done — issue #924.
-      expect(mockRefetchSnapshot).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockRefetchSnapshot).toHaveBeenCalledTimes(1));
     });
 
     it('processes tool_call for different rounds as distinct events', () => {
@@ -245,6 +245,204 @@ describe('ChatRuntimeProvider — dedupe, proactive resolution, mid-turn invaria
   });
 
   describe('mid-turn streaming invariants', () => {
+    it('reconciles missing segment events from chat_done.full_response', async () => {
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onSegment?.({
+          thread_id: 't-segmented',
+          request_id: 'r-segmented',
+          full_response: 'Part one.',
+          segment_index: 0,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() =>
+        expect(threadApi.appendMessage).toHaveBeenCalledWith(
+          't-segmented',
+          expect.objectContaining({ content: 'Part one.', sender: 'agent' })
+        )
+      );
+
+      act(() => {
+        listeners.onDone?.({
+          thread_id: 't-segmented',
+          request_id: 'r-segmented',
+          full_response: 'Part one.\n\nPart two.',
+          rounds_used: 1,
+          total_input_tokens: 10,
+          total_output_tokens: 20,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() =>
+        expect(threadApi.appendMessage).toHaveBeenCalledWith(
+          't-segmented',
+          expect.objectContaining({ content: 'Part one.\n\nPart two.', sender: 'agent' })
+        )
+      );
+      expect(threadApi.appendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not duplicate chat_done.full_response when all segments arrived', async () => {
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onSegment?.({
+          thread_id: 't-complete',
+          request_id: 'r-complete',
+          full_response: 'Part one.\n\n',
+          segment_index: 0,
+          segment_total: 2,
+        });
+        listeners.onSegment?.({
+          thread_id: 't-complete',
+          request_id: 'r-complete',
+          full_response: 'Part two.',
+          segment_index: 1,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() => expect(threadApi.appendMessage).toHaveBeenCalledTimes(2));
+
+      act(() => {
+        listeners.onDone?.({
+          thread_id: 't-complete',
+          request_id: 'r-complete',
+          full_response: 'Part one.\n\nPart two.',
+          rounds_used: 1,
+          total_input_tokens: 10,
+          total_output_tokens: 20,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() => expect(mockRefetchSnapshot).toHaveBeenCalledTimes(1));
+      expect(threadApi.appendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not reconcile when all segments arrived even if full_response differs (trim/joiner)', async () => {
+      // Regression: the server's segmenter trims each segment and joins with
+      // "\n\n", while chat_done.full_response is the raw LLM text. A strict
+      // byte-equality check used to fire reconciliation on every multi-segment
+      // turn — once we have all expected segment_index values, delivery is
+      // complete regardless of full_response content.
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onSegment?.({
+          thread_id: 't-trim',
+          request_id: 'r-trim',
+          full_response: 'Hello.',
+          segment_index: 0,
+          segment_total: 2,
+        });
+        listeners.onSegment?.({
+          thread_id: 't-trim',
+          request_id: 'r-trim',
+          full_response: 'World.',
+          segment_index: 1,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() => expect(threadApi.appendMessage).toHaveBeenCalledTimes(2));
+
+      act(() => {
+        listeners.onDone?.({
+          thread_id: 't-trim',
+          request_id: 'r-trim',
+          // Raw LLM output: leading/trailing whitespace + paragraph break.
+          // segments.join('') === 'Hello.World.' !== full_response, but
+          // delivery is still complete.
+          full_response: '\nHello.\n\nWorld.\n',
+          rounds_used: 1,
+          total_input_tokens: 10,
+          total_output_tokens: 20,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() => expect(mockRefetchSnapshot).toHaveBeenCalledTimes(1));
+      expect(threadApi.appendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('reconciles when a segment is missing', async () => {
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onSegment?.({
+          thread_id: 't-missing',
+          request_id: 'r-missing',
+          full_response: 'Part one.',
+          segment_index: 0,
+          segment_total: 2,
+        });
+        // segment_index 1 never arrives.
+      });
+
+      await waitFor(() => expect(threadApi.appendMessage).toHaveBeenCalledTimes(1));
+
+      act(() => {
+        listeners.onDone?.({
+          thread_id: 't-missing',
+          request_id: 'r-missing',
+          full_response: 'Part one.\n\nPart two.',
+          rounds_used: 1,
+          total_input_tokens: 10,
+          total_output_tokens: 20,
+          segment_total: 2,
+        });
+      });
+
+      await waitFor(() =>
+        expect(threadApi.appendMessage).toHaveBeenCalledWith(
+          't-missing',
+          expect.objectContaining({ content: 'Part one.\n\nPart two.', sender: 'agent' })
+        )
+      );
+      expect(threadApi.appendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('expires stale segment delivery state before chat_done reconciliation', async () => {
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      const listeners = renderProvider();
+
+      try {
+        act(() => {
+          listeners.onSegment?.({
+            thread_id: 't-stale',
+            request_id: 'r-stale',
+            full_response: 'Stale segment.',
+            segment_index: 0,
+            segment_total: 1,
+          });
+        });
+
+        await waitFor(() => expect(threadApi.appendMessage).toHaveBeenCalledTimes(1));
+        nowSpy.mockReturnValue(1_000 + 5 * 60 * 1000 + 1);
+
+        act(() => {
+          listeners.onDone?.({
+            thread_id: 't-stale',
+            request_id: 'r-stale',
+            full_response: 'Stale segment.',
+            rounds_used: 1,
+            total_input_tokens: 10,
+            total_output_tokens: 20,
+            segment_total: 1,
+          });
+        });
+
+        await waitFor(() => expect(threadApi.appendMessage).toHaveBeenCalledTimes(2));
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
     it('accumulates text_delta chunks within the same request_id', () => {
       const listeners = renderProvider();
 
@@ -356,6 +554,90 @@ describe('ChatRuntimeProvider — dedupe, proactive resolution, mid-turn invaria
       const timeline = store.getState().chatRuntime.toolTimelineByThread['t-err'] ?? [];
       expect(timeline[0]?.status).toBe('error');
       expect(store.getState().chatRuntime.inferenceStatusByThread['t-err']).toBeUndefined();
+    });
+
+    it('adds a sanitized user-facing error bubble with Discord report action on chat_error', async () => {
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onError?.({
+          thread_id: 't-err-sanitized',
+          request_id: 'r1',
+          message:
+            'agent job failed: error sending request for url (https://staging-api.alphahuman.xyz/openai/v1/chat/completions)',
+          error_type: 'inference',
+          round: 0,
+        });
+      });
+
+      await waitFor(() =>
+        expect(threadApi.appendMessage).toHaveBeenCalledWith(
+          't-err-sanitized',
+          expect.objectContaining({
+            sender: 'agent',
+            content: expect.stringContaining('Something went wrong. Please try again.'),
+          })
+        )
+      );
+      expect(threadApi.appendMessage).toHaveBeenCalledWith(
+        't-err-sanitized',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '<openhuman-link path="community/discord">Report on Discord</openhuman-link>'
+          ),
+        })
+      );
+      expect(threadApi.appendMessage).not.toHaveBeenCalledWith(
+        't-err-sanitized',
+        expect.objectContaining({
+          content: expect.stringContaining('https://staging-api.alphahuman.xyz'),
+        })
+      );
+    });
+
+    it('does not append duplicate fallback error bubble when the previous message already matches', async () => {
+      const listeners = renderProvider();
+
+      act(() => {
+        listeners.onError?.({
+          thread_id: 't-err-dedupe',
+          request_id: 'r1',
+          message: 'transport fail one',
+          error_type: 'inference',
+          round: 0,
+        });
+      });
+
+      await waitFor(() =>
+        expect(threadApi.appendMessage).toHaveBeenCalledWith(
+          't-err-dedupe',
+          expect.objectContaining({
+            content: expect.stringContaining('Something went wrong. Please try again.'),
+          })
+        )
+      );
+
+      act(() => {
+        listeners.onError?.({
+          thread_id: 't-err-dedupe',
+          request_id: 'r2',
+          message: 'transport fail two',
+          error_type: 'inference',
+          round: 0,
+        });
+      });
+
+      await waitFor(() => {
+        const matchingCalls = vi
+          .mocked(threadApi.appendMessage)
+          .mock.calls.filter(
+            call =>
+              call[0] === 't-err-dedupe' &&
+              typeof call[1]?.content === 'string' &&
+              call[1].content.includes('Something went wrong. Please try again.')
+          );
+        expect(matchingCalls).toHaveLength(1);
+      });
     });
   });
 
@@ -497,6 +779,78 @@ describe('ChatRuntimeProvider — dedupe, proactive resolution, mid-turn invaria
       // than synthesising a partial subagent row from incomplete data.
       const timeline = store.getState().chatRuntime.toolTimelineByThread[threadId] ?? [];
       expect(timeline).toHaveLength(0);
+    });
+  });
+
+  // Regression: on Windows users report being "locked out" of the composer
+  // after sleep/wake or a network flap — the in-flight turn's `chat_done`
+  // never arrives on the new socket, so `activeThreadId` and the
+  // `started`/`streaming` lifecycle stay set and the textarea remains
+  // disabled. The reconcile effect releases them on disconnect so the
+  // composer becomes typeable again immediately.
+  describe('socket-disconnect reconciliation (#WindowsLockout)', () => {
+    it('clears activeThreadId and in-flight lifecycle when the socket drops mid-turn', async () => {
+      const threadId = 't-disconnect';
+      renderProvider();
+
+      await act(async () => {
+        const { setActiveThread } = await import('../../store/threadSlice');
+        const { beginInferenceTurn, setInferenceStatusForThread } =
+          await import('../../store/chatRuntimeSlice');
+        store.dispatch(setActiveThread(threadId));
+        store.dispatch(beginInferenceTurn({ threadId }));
+        store.dispatch(
+          setInferenceStatusForThread({
+            threadId,
+            status: { phase: 'thinking', iteration: 1, maxIterations: 10 },
+          })
+        );
+      });
+
+      expect(store.getState().thread.activeThreadId).toBe(threadId);
+      expect(store.getState().chatRuntime.inferenceTurnLifecycleByThread[threadId]).toBe('started');
+
+      await act(async () => {
+        store.dispatch(setStatusForUser({ userId: '__pending__', status: 'disconnected' }));
+      });
+
+      await waitFor(() => {
+        expect(store.getState().thread.activeThreadId).toBeNull();
+        expect(
+          store.getState().chatRuntime.inferenceTurnLifecycleByThread[threadId]
+        ).toBeUndefined();
+        expect(store.getState().chatRuntime.inferenceStatusByThread[threadId]).toBeUndefined();
+      });
+    });
+
+    it('preserves streamingAssistant text so the partial reply stays visible after disconnect', async () => {
+      const threadId = 't-disconnect-streaming';
+      renderProvider();
+
+      await act(async () => {
+        const { setActiveThread } = await import('../../store/threadSlice');
+        const { beginInferenceTurn, setStreamingAssistantForThread } =
+          await import('../../store/chatRuntimeSlice');
+        store.dispatch(setActiveThread(threadId));
+        store.dispatch(beginInferenceTurn({ threadId }));
+        store.dispatch(
+          setStreamingAssistantForThread({
+            threadId,
+            streaming: { requestId: 'req-1', content: 'Hello there, partial', thinking: '' },
+          })
+        );
+      });
+
+      await act(async () => {
+        store.dispatch(setStatusForUser({ userId: '__pending__', status: 'disconnected' }));
+      });
+
+      await waitFor(() => {
+        expect(store.getState().thread.activeThreadId).toBeNull();
+      });
+      expect(store.getState().chatRuntime.streamingAssistantByThread[threadId]).toMatchObject({
+        content: 'Hello there, partial',
+      });
     });
   });
 });

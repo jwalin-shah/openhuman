@@ -83,7 +83,7 @@ function resetCoreStateStore() {
       chatOnboardingCompleted: false,
       analyticsEnabled: false,
       meetAutoOrchestratorHandoff: false,
-      localState: { encryptionKey: null, primaryWalletAddress: null, onboardingTasks: null },
+      localState: { encryptionKey: null, onboardingTasks: null },
       runtime: { screenIntelligence: null, localAi: null, autocomplete: null, service: null },
     },
     teams: [],
@@ -285,6 +285,48 @@ describe('CoreStateProvider — identity-change cache clearing', () => {
     expect(vi.mocked(tauriCommands.openhumanUpdateMeetSettings)).toHaveBeenCalledWith({
       auto_orchestrator_handoff: true,
     });
+  });
+
+  it('dispatching core-rpc-auth-expired triggers clearSession (and debounces repeated fires within 10s)', async () => {
+    fetchSnapshot.mockResolvedValue(makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }));
+    listTeams.mockResolvedValue([]);
+    vi.mocked(tauriCommands.logout).mockReset();
+    vi.mocked(tauriCommands.logout).mockResolvedValue(undefined as never);
+
+    render(
+      <CoreStateProvider>
+        <Consumer />
+      </CoreStateProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('ready'));
+
+    // First dispatch should clear the session.
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('core-rpc-auth-expired', {
+          detail: { method: 'openhuman.team_get_usage', source: 'rpc' },
+        })
+      );
+    });
+
+    await waitFor(() => expect(vi.mocked(tauriCommands.logout)).toHaveBeenCalledTimes(1));
+
+    // Repeated fires within the debounce window must NOT call logout again.
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('core-rpc-auth-expired', {
+          detail: { method: 'openhuman.threads_list', source: 'rpc' },
+        })
+      );
+      window.dispatchEvent(
+        new CustomEvent('core-rpc-auth-expired', {
+          detail: { method: 'openhuman.billing_get_current_plan', source: 'rpc' },
+        })
+      );
+    });
+
+    expect(vi.mocked(tauriCommands.logout)).toHaveBeenCalledTimes(1);
   });
 
   it('setMeetAutoOrchestratorHandoff swallows refresh errors after the RPC succeeds (#1299)', async () => {

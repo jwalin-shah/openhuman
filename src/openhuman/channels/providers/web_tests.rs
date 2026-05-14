@@ -1,11 +1,25 @@
 use super::{
     all_web_channel_controller_schemas, all_web_channel_registered_controllers, cancel_chat,
-    event_session_id_for, inference_budget_exceeded_user_message,
+    classify_inference_error, event_session_id_for, extract_provider_error_detail,
+    generic_inference_error_user_message, inference_budget_exceeded_user_message,
     is_inference_budget_exceeded_error, json_output, key_for, normalize_model_override,
-    optional_f64, optional_string, required_string, schemas, start_chat,
-    subscribe_web_channel_events,
+    optional_f64, optional_string, required_string, schemas, set_test_forced_run_chat_task_error,
+    start_chat, subscribe_web_channel_events,
 };
 use crate::core::TypeSchema;
+use tokio::time::{timeout, Duration};
+
+/// Ensures the test-only forced run_chat_task failure toggle is always reset,
+/// even if the test panics before reaching explicit cleanup code.
+struct TestForcedRunChatTaskErrorGuard;
+
+impl Drop for TestForcedRunChatTaskErrorGuard {
+    fn drop(&mut self) {
+        tokio::spawn(async {
+            set_test_forced_run_chat_task_error(None).await;
+        });
+    }
+}
 
 #[tokio::test]
 async fn start_chat_validates_required_fields() {
@@ -58,6 +72,49 @@ async fn cancel_chat_validates_required_fields() {
     assert!(err.contains("thread_id is required"));
 }
 
+#[tokio::test]
+async fn start_chat_emits_sanitized_chat_error_on_inference_failure() {
+    set_test_forced_run_chat_task_error(Some(
+        "error sending request for url (https://internal-api.example.invalid/openai/v1/chat/completions)",
+    ))
+    .await;
+    let _forced_error_guard = TestForcedRunChatTaskErrorGuard;
+
+    let mut rx = subscribe_web_channel_events();
+    let request_id = start_chat(
+        "coverage-client",
+        "coverage-thread",
+        "Please summarize this in one line.",
+        None,
+        None,
+    )
+    .await
+    .expect("start_chat should accept valid request");
+
+    let expected = generic_inference_error_user_message().to_string();
+    let recv = timeout(Duration::from_secs(20), async move {
+        loop {
+            let event = rx.recv().await.expect("event stream should stay open");
+            if event.event != "chat_error" {
+                continue;
+            }
+            if event.request_id != request_id {
+                continue;
+            }
+            return event;
+        }
+    })
+    .await
+    .expect("expected chat_error event for started chat request");
+
+    let message = recv.message.unwrap_or_default();
+    assert_eq!(message, expected);
+    assert!(
+        !message.contains("error sending request for url"),
+        "chat error payload must not expose raw transport details"
+    );
+}
+
 #[test]
 fn detects_backend_budget_exhaustion_error() {
     assert!(is_inference_budget_exceeded_error(
@@ -76,6 +133,46 @@ fn budget_exceeded_copy_mentions_top_up() {
     let message = inference_budget_exceeded_user_message();
     assert!(message.contains("top up"));
     assert!(message.contains("credits"));
+}
+
+#[test]
+fn extract_provider_error_detail_pulls_openai_message() {
+    let raw = r#"custom_openai API error (404 Not Found): {"error":{"message":"Project `proj_X` does not have access to model `gpt-5.5`","type":"invalid_request_error","param":null,"code":"model_not_found"}}"#;
+    let detail = extract_provider_error_detail(raw).expect("expected JSON message");
+    assert!(
+        detail.contains("does not have access to model"),
+        "got: {detail}"
+    );
+    assert!(detail.contains("gpt-5.5"));
+}
+
+#[test]
+fn extract_provider_error_detail_returns_none_for_transport_errors() {
+    // Plain transport failure — no provider JSON body to quote. Surfacing
+    // raw transport text would leak internal infra URLs.
+    let raw = "error sending request for url (https://internal-api.example.invalid/openai/v1/chat/completions)";
+    assert!(extract_provider_error_detail(raw).is_none());
+}
+
+#[test]
+fn classify_inference_error_quotes_model_unavailable_detail() {
+    let raw = r#"custom_openai API error (404 Not Found): {"error":{"message":"The model `gpt-5.5` does not exist or you do not have access to it.","code":"model_not_found"}}"#;
+    let (category, message) = classify_inference_error(raw);
+    assert_eq!(category, "model_unavailable");
+    assert!(message.contains("Check your model settings"));
+    assert!(
+        message.contains("gpt-5.5"),
+        "should quote model name: {message}"
+    );
+}
+
+#[test]
+fn generic_error_copy_is_sanitized_and_has_discord_report_action() {
+    let message = generic_inference_error_user_message();
+    assert!(message.contains("Something went wrong. Please try again."));
+    assert!(message.contains("This error has been reported."));
+    assert!(message
+        .contains("<openhuman-link path=\"community/discord\">Report on Discord</openhuman-link>"));
 }
 
 // ── Schema catalog ────────────────────────────────────────────

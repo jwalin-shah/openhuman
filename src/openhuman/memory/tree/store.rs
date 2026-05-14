@@ -20,7 +20,17 @@ const DB_DIR: &str = "memory_tree";
 const DB_FILE: &str = "chunks.db";
 const DEFAULT_LIST_LIMIT: usize = 100;
 const MAX_LIST_LIMIT: usize = 10_000;
-const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+// 15s gives the busy-handler enough headroom that transient write-lock
+// contention (4 job workers + scheduler + ingest producers all writing the
+// same `memory_tree/chunks.db`) is absorbed inside rusqlite instead of
+// surfacing as `SQLITE_BUSY` to callers. Workers still treat busy as a
+// soft signal (see `memory::tree::jobs::worker`) so even if this is
+// exceeded, the only effect is a one-poll backoff — but 15s is
+// comfortably above realistic peer-write durations and shrinks the rate
+// at which we have to fall back to that path. The previous 5s was tight
+// enough on contended Windows hosts that we were observing avoidable
+// busy returns (see OPENHUMAN-TAURI-BP).
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Chunk lifecycle: freshly persisted, awaiting the async extract job.
 pub const CHUNK_STATUS_PENDING_EXTRACTION: &str = "pending_extraction";
@@ -82,6 +92,9 @@ CREATE INDEX IF NOT EXISTS idx_mem_tree_score_dropped
     ON mem_tree_score(dropped);
 
 -- Phase 2 (#708): inverted index entity_id -> node_id for retrieval.
+-- is_user (#1365) is set at index time via the Composio identity registry
+-- (is_self_identity_any_toolkit). Default 0 so legacy rows read back as
+-- non-user until the backfill job re-tags them.
 CREATE TABLE IF NOT EXISTS mem_tree_entity_index (
     entity_id              TEXT NOT NULL,
     node_id                TEXT NOT NULL,
@@ -91,6 +104,7 @@ CREATE TABLE IF NOT EXISTS mem_tree_entity_index (
     score                  REAL NOT NULL,
     timestamp_ms           INTEGER NOT NULL,
     tree_id                TEXT,
+    is_user                INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_id, node_id)
 );
 
@@ -215,6 +229,19 @@ CREATE INDEX IF NOT EXISTS idx_mem_tree_jobs_kind
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_jobs_dedupe_active
     ON mem_tree_jobs(dedupe_key)
     WHERE dedupe_key IS NOT NULL AND status IN ('ready', 'running');
+
+-- Source-level ingest gate. Memory items (documents, chat batches, email
+-- threads) are append-only — once a `(source_kind, source_id)` is ingested
+-- it must not be re-ingested, otherwise its chunks flow back through
+-- extract → admit → buffer → seal and end up duplicated in the summariser
+-- tree. The first ingest claims the row; subsequent ingest_* calls for the
+-- same key short-circuit before canonicalisation.
+CREATE TABLE IF NOT EXISTS mem_tree_ingested_sources (
+    source_kind            TEXT NOT NULL,
+    source_id              TEXT NOT NULL,
+    ingested_at_ms         INTEGER NOT NULL,
+    PRIMARY KEY (source_kind, source_id)
+);
 ";
 
 /// Upsert a batch of chunks atomically.
@@ -532,6 +559,49 @@ fn set_chunk_lifecycle_status_conn(conn: &Connection, chunk_id: &str, status: &s
     Ok(())
 }
 
+/// Best-effort, non-transactional check used by `ingest_*` to skip
+/// canonicalisation when a source has already been ingested. The
+/// authoritative gate is [`claim_source_ingest_tx`] inside the persist
+/// transaction — this lookup just avoids burning canonicaliser work on
+/// the obvious dup case.
+pub fn is_source_ingested(
+    config: &Config,
+    source_kind: SourceKind,
+    source_id: &str,
+) -> Result<bool> {
+    with_connection(config, |conn| {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mem_tree_ingested_sources \
+             WHERE source_kind = ?1 AND source_id = ?2",
+            params![source_kind.as_str(), source_id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    })
+}
+
+/// Atomically claim `(source_kind, source_id)` for ingestion. Returns
+/// `true` if the row was newly inserted (caller should proceed with the
+/// rest of the persist transaction); `false` if a previous ingest already
+/// claimed this source (caller must roll back / skip).
+///
+/// Lives inside the same transaction as the chunk + job writes so two
+/// concurrent ingests of the same source can't both pass the gate.
+pub(crate) fn claim_source_ingest_tx(
+    tx: &Transaction<'_>,
+    source_kind: SourceKind,
+    source_id: &str,
+    now_ms: i64,
+) -> Result<bool> {
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO mem_tree_ingested_sources \
+            (source_kind, source_id, ingested_at_ms) \
+         VALUES (?1, ?2, ?3)",
+        params![source_kind.as_str(), source_id, now_ms],
+    )?;
+    Ok(inserted > 0)
+}
+
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let id: String = row.get(0)?;
     let source_kind_s: String = row.get(1)?;
@@ -605,8 +675,11 @@ pub(crate) fn with_connection<T>(
         .with_context(|| format!("Failed to open memory_tree DB: {}", db_path.display()))?;
     conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
         .context("Failed to configure memory_tree busy timeout")?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .context("Failed to enable memory_tree WAL mode")?;
+    if let Err(wal_err) = conn.execute_batch("PRAGMA journal_mode=WAL;") {
+        log::warn!(
+            "[memory_tree] Failed to enable WAL mode (filesystem may not support it): {wal_err}"
+        );
+    }
     conn.execute_batch(SCHEMA)
         .context("Failed to initialize memory_tree schema")?;
     // Phase 2 migrations — additive, idempotent.
@@ -663,6 +736,16 @@ pub(crate) fn with_connection<T>(
     // disk via `content_path` or falling back to the SQL `content`
     // preview. Nullable so legacy chunks keep working unchanged.
     add_column_if_missing(&conn, "mem_tree_chunks", "raw_refs_json", "TEXT")?;
+    // #1365: is_user flag on indexed entity rows. Set at write time by
+    // running the canonical id through the Composio identity registry
+    // (`is_self_identity_any_toolkit`). Default 0 so legacy rows read
+    // back as "not user" until the backfill job re-tags them.
+    add_column_if_missing(
+        &conn,
+        "mem_tree_entity_index",
+        "is_user",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     f(&conn)
 }
 

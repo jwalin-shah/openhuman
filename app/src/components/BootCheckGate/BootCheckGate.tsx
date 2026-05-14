@@ -14,10 +14,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { type BootCheckResult, runBootCheck } from '../../lib/bootCheck';
 import { bootCheckTransport } from '../../services/bootCheckService';
-import { clearCoreRpcUrlCache } from '../../services/coreRpcClient';
+import {
+  clearCoreRpcTokenCache,
+  clearCoreRpcUrlCache,
+  testCoreRpcConnection,
+} from '../../services/coreRpcClient';
 import { type CoreMode, resetCoreMode, setCoreMode } from '../../store/coreModeSlice';
 import { useAppDispatch, useAppSelector } from '../../store/hooks';
-import { storeRpcUrl } from '../../utils/configPersistence';
+import {
+  clearStoredCoreMode,
+  clearStoredCoreToken,
+  storeCoreMode,
+  storeCoreToken,
+  storeRpcUrl,
+} from '../../utils/configPersistence';
+import { isTauri } from '../../utils/tauriCommands/common';
 
 const log = debug('boot-check');
 const logError = debug('boot-check:error');
@@ -57,10 +68,107 @@ interface PickerProps {
   onConfirm: (mode: CoreMode) => void;
 }
 
+type TestStatus =
+  | { kind: 'idle' }
+  | { kind: 'testing' }
+  | { kind: 'ok' }
+  | { kind: 'auth' }
+  | { kind: 'unreachable'; reason: string };
+
+// Desktop release artifact URL surfaced on the web build's mode picker so
+// users without a remote core have a clear path to install the app instead
+// of being trapped on the cloud-only form.
+const DESKTOP_DOWNLOAD_URL = 'https://github.com/tinyhumansai/openhuman/releases/latest';
+
 function ModePicker({ onConfirm }: PickerProps) {
-  const [selected, setSelected] = useState<'local' | 'cloud'>('local');
+  // Web build cannot spawn a local sidecar, so the only viable choice is
+  // cloud. Default the selection accordingly and hide the local option in
+  // the render path below.
+  const isDesktop = isTauri();
+  const [selected, setSelected] = useState<'local' | 'cloud'>(isDesktop ? 'local' : 'cloud');
   const [cloudUrl, setCloudUrl] = useState('');
+  const [cloudToken, setCloudToken] = useState('');
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<TestStatus>({ kind: 'idle' });
+
+  /**
+   * Validate the cloud URL + token inputs against a live core before we
+   * commit the mode. We hit the public `core.ping` (auth-bypass) to confirm
+   * reachability, then re-issue the same JSON-RPC envelope with the bearer
+   * token to confirm `/rpc` accepts it. This catches the two most common
+   * paste-time mistakes — wrong URL, wrong/missing token — with one click,
+   * before the user lands on the unreachable result screen.
+   *
+   * Tokens are never logged: only `tokenLen` is emitted via the existing
+   * picker debug line, and any error messages from the network/JSON parse
+   * paths are passed through verbatim without the bearer value.
+   */
+  const validateInputs = (): { url: string; token: string } | null => {
+    const trimmedUrl = cloudUrl.trim();
+    if (!trimmedUrl) {
+      setUrlError('Please enter a core URL.');
+      return null;
+    }
+    try {
+      const parsed = new URL(trimmedUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        setUrlError('URL must start with http:// or https://');
+        return null;
+      }
+    } catch {
+      setUrlError('Please enter a valid URL (e.g. https://core.example.com/rpc)');
+      return null;
+    }
+    setUrlError(null);
+
+    const trimmedToken = cloudToken.trim();
+    if (!trimmedToken) {
+      setTokenError('Please enter the core auth token.');
+      return null;
+    }
+    setTokenError(null);
+
+    return { url: trimmedUrl, token: trimmedToken };
+  };
+
+  const handleTestConnection = async () => {
+    const validated = validateInputs();
+    if (!validated) return;
+
+    setTestStatus({ kind: 'testing' });
+    log(
+      '[boot-check] picker — testing cloud connection url=%s tokenLen=%d',
+      validated.url,
+      validated.token.length
+    );
+
+    try {
+      const response = await testCoreRpcConnection(validated.url, validated.token);
+      if (response.status === 401 || response.status === 403) {
+        log('[boot-check] picker — test failed: auth (status=%d)', response.status);
+        setTestStatus({ kind: 'auth' });
+        return;
+      }
+      if (!response.ok) {
+        log('[boot-check] picker — test failed: HTTP %d', response.status);
+        setTestStatus({ kind: 'unreachable', reason: `HTTP ${response.status} from /rpc` });
+        return;
+      }
+      // Drain the body — response.ok with JSON-RPC error is still reachable.
+      try {
+        await response.json();
+      } catch {
+        // Non-JSON body is unusual but doesn't disprove reachability.
+      }
+      log('[boot-check] picker — test succeeded');
+      setTestStatus({ kind: 'ok' });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'Connection failed';
+      logError('[boot-check] picker — test errored: %o', err);
+      setTestStatus({ kind: 'unreachable', reason });
+    }
+  };
 
   const handleContinue = () => {
     if (selected === 'local') {
@@ -69,79 +177,144 @@ function ModePicker({ onConfirm }: PickerProps) {
       return;
     }
 
-    // Basic URL validation: must be http(s)
-    const trimmed = cloudUrl.trim();
-    if (!trimmed) {
-      setUrlError('Please enter a core URL.');
-      return;
-    }
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        setUrlError('URL must start with http:// or https://');
-        return;
-      }
-    } catch {
-      setUrlError('Please enter a valid URL (e.g. https://core.example.com/rpc)');
-      return;
-    }
+    const validated = validateInputs();
+    if (!validated) return;
 
-    setUrlError(null);
-    log('[boot-check] picker — user selected cloud mode url=%s', trimmed);
-    onConfirm({ kind: 'cloud', url: trimmed });
+    log(
+      '[boot-check] picker — user selected cloud mode url=%s tokenLen=%d',
+      validated.url,
+      validated.token.length
+    );
+    onConfirm({ kind: 'cloud', url: validated.url, token: validated.token });
   };
 
   return (
     <Panel>
-      <h2 className="text-xl font-semibold text-white">Choose core mode</h2>
+      <h2 className="text-xl font-semibold text-white">
+        {isDesktop ? 'Choose core mode' : 'Connect to your core'}
+      </h2>
       <p className="mt-2 text-sm text-stone-300">
-        OpenHuman needs a running core to operate. Choose how you want to connect.
+        {isDesktop
+          ? 'OpenHuman needs a running core to operate. Choose how you want to connect.'
+          : 'OpenHuman on the web connects to a remote core you control. Enter its URL and auth token, or install the desktop app to run one locally.'}
       </p>
 
-      <div className="mt-5 flex flex-col gap-3">
-        {/* Local option */}
-        <button
-          type="button"
-          onClick={() => setSelected('local')}
-          className={`rounded-xl border p-4 text-left transition-colors ${
-            selected === 'local'
-              ? 'border-ocean-500 bg-ocean-500/10 text-white'
-              : 'border-stone-700 text-stone-300 hover:border-stone-500 hover:bg-stone-800'
-          }`}>
-          <div className="font-medium">Local (recommended)</div>
-          <div className="mt-0.5 text-xs text-stone-400">
-            Embedded core runs on this device — fastest, no configuration required.
-          </div>
-        </button>
+      {!isDesktop && (
+        <div
+          className="mt-4 rounded-xl border border-stone-700 bg-stone-800/60 p-3 text-xs text-stone-300"
+          data-testid="web-download-cta">
+          Prefer to run everything on your own device?{' '}
+          <a
+            href={DESKTOP_DOWNLOAD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ocean-400 underline hover:text-ocean-300">
+            Download the desktop app
+          </a>
+          .
+        </div>
+      )}
 
-        {/* Cloud option */}
-        <button
-          type="button"
-          onClick={() => setSelected('cloud')}
-          className={`rounded-xl border p-4 text-left transition-colors ${
-            selected === 'cloud'
-              ? 'border-ocean-500 bg-ocean-500/10 text-white'
-              : 'border-stone-700 text-stone-300 hover:border-stone-500 hover:bg-stone-800'
-          }`}>
-          <div className="font-medium">Cloud</div>
-          <div className="mt-0.5 text-xs text-stone-400">
-            Connect to a remote core at a custom URL.
-          </div>
-        </button>
+      <div className="mt-5 flex flex-col gap-3">
+        {/* Local option — desktop only; web builds cannot spawn a sidecar. */}
+        {isDesktop && (
+          <button
+            type="button"
+            onClick={() => setSelected('local')}
+            className={`rounded-xl border p-4 text-left transition-colors ${
+              selected === 'local'
+                ? 'border-ocean-500 bg-ocean-500/10 text-white'
+                : 'border-stone-700 text-stone-300 hover:border-stone-500 hover:bg-stone-800'
+            }`}>
+            <div className="font-medium">Local (recommended)</div>
+            <div className="mt-0.5 text-xs text-stone-400">
+              Embedded core runs on this device — fastest, no configuration required.
+            </div>
+          </button>
+        )}
+
+        {/* Cloud option — always available; the only option on the web build. */}
+        {isDesktop && (
+          <button
+            type="button"
+            onClick={() => setSelected('cloud')}
+            className={`rounded-xl border p-4 text-left transition-colors ${
+              selected === 'cloud'
+                ? 'border-ocean-500 bg-ocean-500/10 text-white'
+                : 'border-stone-700 text-stone-300 hover:border-stone-500 hover:bg-stone-800'
+            }`}>
+            <div className="font-medium">Cloud</div>
+            <div className="mt-0.5 text-xs text-stone-400">
+              Connect to a remote core at a custom URL.
+            </div>
+          </button>
+        )}
 
         {selected === 'cloud' && (
-          <div className="mt-1 flex flex-col gap-1">
-            <input
-              type="url"
-              placeholder="https://core.example.com/rpc"
-              value={cloudUrl}
-              onChange={e => {
-                setCloudUrl(e.target.value);
-                setUrlError(null);
-              }}
-              className="rounded-lg border border-stone-600 bg-stone-800 px-3 py-2 text-sm text-white placeholder-stone-500 focus:border-ocean-500 focus:outline-none"
-            />
-            {urlError && <p className="text-xs text-coral-400">{urlError}</p>}
+          <div className="mt-1 flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-stone-300">Core RPC URL</label>
+              <input
+                type="url"
+                placeholder="https://core.example.com/rpc"
+                value={cloudUrl}
+                onChange={e => {
+                  setCloudUrl(e.target.value);
+                  setUrlError(null);
+                  setTestStatus({ kind: 'idle' });
+                }}
+                className="rounded-lg border border-stone-600 bg-stone-800 px-3 py-2 text-sm text-white placeholder-stone-500 focus:border-ocean-500 focus:outline-none"
+              />
+              {urlError && <p className="text-xs text-coral-400">{urlError}</p>}
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-stone-300">
+                Auth token (<code className="text-[10px]">OPENHUMAN_CORE_TOKEN</code>)
+              </label>
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Bearer token configured on the remote core"
+                value={cloudToken}
+                onChange={e => {
+                  setCloudToken(e.target.value);
+                  setTokenError(null);
+                  setTestStatus({ kind: 'idle' });
+                }}
+                className="rounded-lg border border-stone-600 bg-stone-800 px-3 py-2 text-sm text-white placeholder-stone-500 focus:border-ocean-500 focus:outline-none"
+              />
+              {tokenError && <p className="text-xs text-coral-400">{tokenError}</p>}
+              <p className="text-[11px] text-stone-500">
+                Stored on this device only. Required for remote cores — the desktop sends it as{' '}
+                <code>Authorization: Bearer …</code> on every RPC.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testStatus.kind === 'testing'}
+                className="rounded-lg border border-stone-600 px-3 py-1.5 text-xs text-stone-100 hover:bg-stone-800 disabled:opacity-60">
+                {testStatus.kind === 'testing' ? 'Testing…' : 'Test connection'}
+              </button>
+              {testStatus.kind === 'ok' && (
+                <span className="text-xs text-emerald-400" data-testid="test-status-ok">
+                  Connected ✓
+                </span>
+              )}
+              {testStatus.kind === 'auth' && (
+                <span className="text-xs text-coral-400" data-testid="test-status-auth">
+                  Auth failed — check the token (got 401/403).
+                </span>
+              )}
+              {testStatus.kind === 'unreachable' && (
+                <span className="text-xs text-coral-400" data-testid="test-status-unreachable">
+                  Unreachable: {testStatus.reason}
+                </span>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -416,7 +589,7 @@ export default function BootCheckGate({ children }: BootCheckGateProps) {
   // Start check automatically when mode is set and we're in checking phase.
   // The async setState calls inside runCheck() happen after an await, so they
   // do not synchronously cascade — suppress the linter warning here.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+
   useEffect(() => {
     if (coreMode.kind !== 'unset' && phase === 'checking') {
       void runCheck(coreMode);
@@ -429,6 +602,24 @@ export default function BootCheckGate({ children }: BootCheckGateProps) {
   const handlePickerConfirm = useCallback(
     (mode: CoreMode) => {
       log('[boot-check] gate — picker confirmed mode=%s', mode.kind);
+      // Persist URL + token for cloud mode so getCoreRpcUrl/Token resolve
+      // correctly on the boot-check probe (and every subsequent RPC) without
+      // waiting for redux-persist's async rehydrate to complete. Also write
+      // the synchronous `openhuman_core_mode` marker so a reload triggered
+      // mid-flight (e.g. `handleIdentityFlip` → `restartApp`) recovers the
+      // chosen mode from localStorage before redux-persist flushes. Clear
+      // caches so any prior local-mode resolution doesn't leak into cloud.
+      if (mode.kind === 'cloud') {
+        storeRpcUrl(mode.url);
+        storeCoreToken(mode.token ?? '');
+        storeCoreMode('cloud');
+      } else {
+        storeRpcUrl('');
+        clearStoredCoreToken();
+        storeCoreMode('local');
+      }
+      clearCoreRpcUrlCache();
+      clearCoreRpcTokenCache();
       dispatch(setCoreMode(mode));
       setPhase('checking');
     },
@@ -441,7 +632,10 @@ export default function BootCheckGate({ children }: BootCheckGateProps) {
   const handleSwitchMode = useCallback(() => {
     log('[boot-check] gate — switch mode requested');
     storeRpcUrl('');
+    clearStoredCoreToken();
+    clearStoredCoreMode();
     clearCoreRpcUrlCache();
+    clearCoreRpcTokenCache();
     dispatch(resetCoreMode());
     setPhase('picker');
     setResult(null);

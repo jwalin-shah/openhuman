@@ -10,10 +10,34 @@ use crate::rpc::RpcOutcome;
 const DEFAULT_ONBOARDING_FLAG_NAME: &str = ".skip_onboarding";
 
 #[derive(Debug, Deserialize)]
+struct ModelRouteUpdate {
+    hint: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ModelSettingsUpdate {
+    /// OpenHuman product backend URL. Used for auth, billing, voice, and
+    /// every non-inference HTTP call. Almost always left blank so it
+    /// defaults to the canonical hosted backend.
     api_url: Option<String>,
+    /// Custom OpenAI-compatible LLM endpoint. When set together with
+    /// `api_key`, inference talks directly to this URL instead of routing
+    /// through the OpenHuman backend. Send an empty string to clear.
+    inference_url: Option<String>,
+    /// Optional API key for OpenAI-compatible backends. Stored verbatim in
+    /// `config.toml` on the user's machine — see #1342 (local-first / pluggable
+    /// backends). The key is never echoed back over RPC; `get_client_config`
+    /// only reports `api_key_set: bool`.
+    api_key: Option<String>,
     default_model: Option<String>,
     default_temperature: Option<f64>,
+    /// When present, REPLACES `config.model_routes` wholesale with these
+    /// `(hint, model)` pairs. Send `Some([])` to clear all routes (used when
+    /// the user switches back to the OpenHuman backend whose built-in router
+    /// picks per-task models on its own). Omit to leave existing routes
+    /// untouched.
+    model_routes: Option<Vec<ModelRouteUpdate>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +137,12 @@ struct VoiceServerSettingsUpdate {
     custom_dictionary: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ComposioTriggerSettingsUpdate {
+    triage_disabled: Option<bool>,
+    triage_disabled_toolkits: Option<Vec<String>>,
+}
+
 pub fn all_controller_schemas() -> Vec<ControllerSchema> {
     vec![
         schemas("get_config"),
@@ -140,6 +170,8 @@ pub fn all_controller_schemas() -> Vec<ControllerSchema> {
         schemas("update_dictation_settings"),
         schemas("get_voice_server_settings"),
         schemas("update_voice_server_settings"),
+        schemas("update_composio_trigger_settings"),
+        schemas("get_composio_trigger_settings"),
     ]
 }
 
@@ -245,6 +277,14 @@ pub fn all_registered_controllers() -> Vec<RegisteredController> {
             schema: schemas("update_voice_server_settings"),
             handler: handle_update_voice_server_settings,
         },
+        RegisteredController {
+            schema: schemas("update_composio_trigger_settings"),
+            handler: handle_update_composio_trigger_settings,
+        },
+        RegisteredController {
+            schema: schemas("get_composio_trigger_settings"),
+            handler: handle_get_composio_trigger_settings,
+        },
     ]
 }
 
@@ -271,7 +311,13 @@ pub fn schemas(function: &str) -> ControllerSchema {
                 FieldSchema {
                     name: "api_url",
                     ty: TypeSchema::Option(Box::new(TypeSchema::String)),
-                    comment: "Configured backend API URL, if any.",
+                    comment: "Configured OpenHuman product backend URL, if any.",
+                    required: false,
+                },
+                FieldSchema {
+                    name: "inference_url",
+                    ty: TypeSchema::Option(Box::new(TypeSchema::String)),
+                    comment: "Custom OpenAI-compatible LLM endpoint, if any. When set together with an api_key, inference goes direct to this URL.",
                     required: false,
                 },
                 FieldSchema {
@@ -286,19 +332,39 @@ pub fn schemas(function: &str) -> ControllerSchema {
                     comment: "OpenHuman core version.",
                     required: true,
                 },
+                FieldSchema {
+                    name: "api_key_set",
+                    ty: TypeSchema::Bool,
+                    comment: "True when a custom backend api_key is stored locally. The key itself is never returned over RPC.",
+                    required: true,
+                },
+                FieldSchema {
+                    name: "model_routes",
+                    ty: TypeSchema::Json,
+                    comment: "Persisted task-hint -> model id pairs the core router will obey. Empty when the OpenHuman built-in router is active.",
+                    required: true,
+                },
             ],
         },
         "update_model_settings" => ControllerSchema {
             namespace: "config",
             function: "update_model_settings",
-            description: "Update model and backend connection settings.",
+            description: "Update model and backend connection settings, including a custom OpenAI-compatible backend (api_url + api_key).",
             inputs: vec![
-                optional_string("api_url", "Backend API URL."),
+                optional_string("api_url", "OpenHuman product backend URL (auth/billing/voice). Almost always left blank; the inference URL is a separate `inference_url` field."),
+                optional_string("inference_url", "Custom OpenAI-compatible LLM endpoint. When set together with `api_key`, inference goes direct to this URL instead of the OpenHuman backend. Pass an empty string to clear."),
+                optional_string("api_key", "Optional API key for the configured inference endpoint. Pass an empty string to clear a previously stored key."),
                 optional_string("default_model", "Default model id."),
                 FieldSchema {
                     name: "default_temperature",
                     ty: TypeSchema::Option(Box::new(TypeSchema::F64)),
                     comment: "Default model temperature.",
+                    required: false,
+                },
+                FieldSchema {
+                    name: "model_routes",
+                    ty: TypeSchema::Option(Box::new(TypeSchema::Json)),
+                    comment: "Optional list of {hint, model} pairs mapping task hints (reasoning, agentic, coding, summarization) to provider-specific model ids. Replaces config.model_routes wholesale; send [] to clear (e.g. when switching back to the OpenHuman built-in router).",
                     required: false,
                 },
             ],
@@ -652,6 +718,49 @@ pub fn schemas(function: &str) -> ControllerSchema {
                 required: true,
             }],
         },
+        "update_composio_trigger_settings" => ControllerSchema {
+            namespace: "config",
+            function: "update_composio_trigger_settings",
+            description:
+                "Update Composio trigger-triage settings. When triage is disabled the \
+                 local LLM is NOT invoked per trigger — events are still archived to \
+                 trigger history.",
+            inputs: vec![
+                optional_bool(
+                    "triage_disabled",
+                    "When true, skip the LLM triage turn for all Composio triggers globally.",
+                ),
+                FieldSchema {
+                    name: "triage_disabled_toolkits",
+                    ty: TypeSchema::Option(Box::new(TypeSchema::Array(Box::new(
+                        TypeSchema::String,
+                    )))),
+                    comment: "Toolkit slugs that skip LLM triage (e.g. [\"gmail\", \"slack\"]).",
+                    required: false,
+                },
+            ],
+            outputs: vec![json_output("snapshot", "Updated config snapshot.")],
+        },
+        "get_composio_trigger_settings" => ControllerSchema {
+            namespace: "config",
+            function: "get_composio_trigger_settings",
+            description: "Read current Composio trigger-triage settings.",
+            inputs: vec![],
+            outputs: vec![
+                FieldSchema {
+                    name: "triage_disabled",
+                    ty: TypeSchema::Bool,
+                    comment: "Whether the global triage-disabled flag is set.",
+                    required: true,
+                },
+                FieldSchema {
+                    name: "triage_disabled_toolkits",
+                    ty: TypeSchema::Array(Box::new(TypeSchema::String)),
+                    comment: "Toolkit slugs that skip LLM triage.",
+                    required: true,
+                },
+            ],
+        },
         _ => ControllerSchema {
             namespace: "config",
             function: "unknown",
@@ -673,14 +782,39 @@ fn handle_get_config(_params: Map<String, Value>) -> ControllerFuture {
 
 fn handle_get_client_config(_params: Map<String, Value>) -> ControllerFuture {
     Box::pin(async move {
-        let config = config_rpc::load_config_with_timeout().await?;
+        log::debug!("[config][rpc] get_client_config enter");
+        let config = match config_rpc::load_config_with_timeout().await {
+            Ok(c) => c,
+            Err(err) => {
+                log::warn!("[config][rpc] get_client_config load failed: {err}");
+                return Err(err);
+            }
+        };
         let app_version =
             std::env::var("OPENHUMAN_APP_VERSION").unwrap_or_else(|_| "unknown".to_string());
+        let api_key_set = config
+            .api_key
+            .as_deref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false);
+        let model_routes: Vec<serde_json::Value> = config
+            .model_routes
+            .iter()
+            .map(|r| serde_json::json!({ "hint": r.hint, "model": r.model }))
+            .collect();
+        log::debug!(
+            "[config][rpc] get_client_config ok api_key_set={} model_routes_count={}",
+            api_key_set,
+            model_routes.len()
+        );
         to_json(RpcOutcome::new(
             serde_json::json!({
                 "api_url": config.api_url,
+                "inference_url": config.inference_url,
                 "default_model": config.default_model,
                 "app_version": app_version,
+                "api_key_set": api_key_set,
+                "model_routes": model_routes,
             }),
             vec!["client config read".to_string()],
         ))
@@ -692,9 +826,19 @@ fn handle_update_model_settings(params: Map<String, Value>) -> ControllerFuture 
         let update = deserialize_params::<ModelSettingsUpdate>(params)?;
         let patch = config_rpc::ModelSettingsPatch {
             api_url: update.api_url,
-            api_key: None,
+            inference_url: update.inference_url,
+            api_key: update.api_key,
             default_model: update.default_model,
             default_temperature: update.default_temperature,
+            model_routes: update.model_routes.map(|routes| {
+                routes
+                    .into_iter()
+                    .map(|r| crate::openhuman::config::ModelRouteConfig {
+                        hint: r.hint,
+                        model: r.model,
+                    })
+                    .collect()
+            }),
         };
         to_json(config_rpc::load_and_apply_model_settings(patch).await?)
     })
@@ -943,6 +1087,49 @@ fn handle_set_onboarding_completed(params: Map<String, Value>) -> ControllerFutu
     Box::pin(async move {
         let payload = deserialize_params::<OnboardingCompletedSetParams>(params)?;
         to_json(config_rpc::set_onboarding_completed(payload.value).await?)
+    })
+}
+
+fn handle_update_composio_trigger_settings(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        log::debug!("[config][rpc] update_composio_trigger_settings enter");
+        let update = match deserialize_params::<ComposioTriggerSettingsUpdate>(params) {
+            Ok(u) => u,
+            Err(err) => {
+                log::warn!("[config][rpc] update_composio_trigger_settings invalid params: {err}");
+                return Err(err);
+            }
+        };
+        let patch = config_rpc::ComposioTriggerSettingsPatch {
+            triage_disabled: update.triage_disabled,
+            triage_disabled_toolkits: update.triage_disabled_toolkits,
+        };
+        match config_rpc::load_and_apply_composio_trigger_settings(patch).await {
+            Ok(outcome) => {
+                log::debug!("[config][rpc] update_composio_trigger_settings ok");
+                to_json(outcome)
+            }
+            Err(err) => {
+                log::warn!("[config][rpc] update_composio_trigger_settings failed: {err}");
+                Err(err)
+            }
+        }
+    })
+}
+
+fn handle_get_composio_trigger_settings(_params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async {
+        log::debug!("[config][rpc] get_composio_trigger_settings enter");
+        match config_rpc::get_composio_trigger_settings().await {
+            Ok(outcome) => {
+                log::debug!("[config][rpc] get_composio_trigger_settings ok");
+                to_json(outcome)
+            }
+            Err(err) => {
+                log::warn!("[config][rpc] get_composio_trigger_settings failed: {err}");
+                Err(err)
+            }
+        }
     })
 }
 

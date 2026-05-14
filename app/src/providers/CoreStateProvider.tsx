@@ -78,18 +78,17 @@ interface CoreStateContextValue extends CoreState {
   setMeetAutoOrchestratorHandoff: (enabled: boolean) => Promise<void>;
   setOnboardingCompletedFlag: (value: boolean) => Promise<void>;
   setEncryptionKey: (value: string | null) => Promise<void>;
-  setPrimaryWalletAddress: (value: string | null) => Promise<void>;
   /**
    * Shallow-merge `patch` into `state.snapshot`. Top-level keys in `patch`
    * REPLACE the existing value — they are not deep-merged.
    *
    * This means passing a nested object (e.g. `{ localState: { encryptionKey: 'x' } }`)
-   * will CLOBBER sibling fields on that object (`primaryWalletAddress`,
-   * `onboardingTasks`). Only flat top-level fields are safe to patch directly:
+   * will CLOBBER sibling fields on that object (`onboardingTasks`). Only flat
+   * top-level fields are safe to patch directly:
    * `currentUser`, `onboardingCompleted`, `chatOnboardingCompleted`,
    * `analyticsEnabled`, `sessionToken`. For nested-object updates, use the
-   * dedicated setter (`setEncryptionKey`, `setPrimaryWalletAddress`,
-   * `setOnboardingTasks`) which preserves siblings.
+   * dedicated setter (`setEncryptionKey`, `setOnboardingTasks`) which
+   * preserves siblings.
    */
   patchSnapshot: (patch: Partial<CoreAppSnapshot>) => void;
   setOnboardingTasks: (value: CoreOnboardingTasks | null) => Promise<void>;
@@ -155,7 +154,6 @@ function normalizeSnapshot(
     meetAutoOrchestratorHandoff: result.meetAutoOrchestratorHandoff ?? false,
     localState: {
       encryptionKey: result.localState.encryptionKey ?? null,
-      primaryWalletAddress: result.localState.primaryWalletAddress ?? null,
       onboardingTasks: result.localState.onboardingTasks ?? null,
     },
     runtime: {
@@ -556,6 +554,8 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
     [refresh, refreshTeams]
   );
 
+  const lastReauthAtRef = useRef(0);
+
   const clearSession = useCallback(async () => {
     logoutGuardUntilRef.current = Date.now() + 5_000;
     snapshotRequestIdRef.current += 1;
@@ -580,6 +580,65 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
     });
   }, [commitState, refresh]);
 
+  // Listen for two flavours of session expiry, both routed through the
+  // same debounced `clearSession`:
+  //
+  // 1. `core-rpc-auth-expired` — emitted by `coreRpcClient` when an
+  //    individual RPC call returns 401 (usage pill, upsell banner,
+  //    threads poll, …). Multiple parallel chains can fire it in the
+  //    same frame after a token expires; the 10s debounce coalesces
+  //    them so `clearSession` only runs once.
+  // 2. `openhuman:session-expired` — emitted by `socketService` when
+  //    the core pushes `auth:session_expired` over Socket.IO (the
+  //    OpenHuman backend provider's `api_error` published
+  //    `DomainEvent::SessionExpired`, or `jsonrpc::invoke_method`
+  //    detected a 401 on a server-side method call). Without this, the
+  //    UI keeps showing a logged-in shell until the next refresh()
+  //    discovers the missing token — confusing, and a security smell
+  //    on shared devices.
+  //
+  // Depends on `clearSession` so the listener always closes over the
+  // latest closure; `clearSession`'s own deps are stable `useCallback`s,
+  // so re-registers are rare.
+  useEffect(() => {
+    const runReauth = (method: string, source: string) => {
+      const now = Date.now();
+      if (now - lastReauthAtRef.current < 10_000) {
+        log('auth-expired debounced (method=%s source=%s)', method, source);
+        return;
+      }
+      lastReauthAtRef.current = now;
+      log('auth-expired: clearing session (method=%s source=%s)', method, source);
+      void clearSession().catch(err => {
+        log('clearSession failed after auth-expired: %O', sanitizeError(err));
+      });
+    };
+
+    const onRpcExpired = (event: Event) => {
+      const detail = (event as CustomEvent<{ method?: string; source?: string }>).detail;
+      runReauth(detail?.method ?? 'unknown', detail?.source ?? 'core-rpc-auth-expired');
+    };
+
+    const onSocketExpired = (event: Event) => {
+      const source =
+        event instanceof CustomEvent &&
+        event.detail &&
+        typeof event.detail === 'object' &&
+        'source' in event.detail &&
+        typeof (event.detail as { source?: unknown }).source === 'string'
+          ? (event.detail as { source: string }).source
+          : 'unknown';
+      runReauth('socket.session_expired', source);
+    };
+
+    window.addEventListener('core-rpc-auth-expired', onRpcExpired as EventListener);
+    window.addEventListener('openhuman:session-expired', onSocketExpired as EventListener);
+    return () => {
+      window.removeEventListener('core-rpc-auth-expired', onRpcExpired as EventListener);
+      window.removeEventListener('openhuman:session-expired', onSocketExpired as EventListener);
+    };
+  }, [clearSession]);
+
   const patchSnapshot = useCallback(
     (patch: Partial<CoreAppSnapshot>) => {
       commitState(previous => ({ ...previous, snapshot: { ...previous.snapshot, ...patch } }));
@@ -599,7 +658,6 @@ export default function CoreStateProvider({ children }: { children: ReactNode })
       setMeetAutoOrchestratorHandoff,
       setOnboardingCompletedFlag,
       setEncryptionKey: value => updateLocalState({ encryptionKey: value }),
-      setPrimaryWalletAddress: value => updateLocalState({ primaryWalletAddress: value }),
       setOnboardingTasks: value => updateLocalState({ onboardingTasks: value }),
       storeSessionToken,
       clearSession,

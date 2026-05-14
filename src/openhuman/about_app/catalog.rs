@@ -35,6 +35,18 @@ const MODEL_DOWNLOAD: Option<CapabilityPrivacy> = Some(CapabilityPrivacy {
     destinations: &["Hugging Face"],
 });
 
+// Self-update flows talk to GitHub Releases directly, not the OpenHuman
+// backend. The outbound payload is metadata only (release list query for
+// `update.check`, asset download URL request for `update.apply`) so
+// `data_kind: Metadata` is the right label — but the destination must
+// reflect that this is a third-party host, otherwise the capability
+// catalog under-reports where the user's request actually goes.
+const GITHUB_RELEASES_METADATA: Option<CapabilityPrivacy> = Some(CapabilityPrivacy {
+    leaves_device: true,
+    data_kind: PrivacyDataKind::Metadata,
+    destinations: &["GitHub Releases"],
+});
+
 const CAPABILITIES: &[Capability] = &[
     Capability {
         id: "conversation.create",
@@ -207,6 +219,20 @@ const CAPABILITIES: &[Capability] = &[
         privacy: None,
     },
     Capability {
+        id: "intelligence.tool_scoped_memory",
+        name: "Tool-Scoped Memory Rules",
+        domain: "intelligence",
+        category: CapabilityCategory::Intelligence,
+        description: "Store durable, tool-specific rules and corrections that survive context \
+            compression. Critical-priority rules (e.g. 'never email Sarah') are pinned into the \
+            system prompt at session start. Captured automatically from user edicts and repeated \
+            tool failures; also writable programmatically via the memory.tool_rule_* RPC surface.",
+        how_to: "Automatic — user edicts are captured after every turn. Manage via \
+            memory.tool_rule_put / memory.tool_rule_list / memory.tool_rule_delete (RPC).",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_RAW,
+    },
+    Capability {
         id: "intelligence.memory_tree_retrieval",
         name: "Memory Tree Retrieval (chat)",
         domain: "intelligence",
@@ -371,10 +397,20 @@ const CAPABILITIES: &[Capability] = &[
         name: "Connect Web3 Wallet",
         domain: "skills",
         category: CapabilityCategory::Skills,
-        description: "Connect a wallet for crypto workflows and onchain actions.",
-        how_to: "Settings > Connections",
-        status: CapabilityStatus::ComingSoon,
-        privacy: None,
+        description: "Set up local EVM, BTC, Solana, and Tron wallet identities from one recovery phrase.",
+        how_to: "Settings > Recovery Phrase or Settings > Connections",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_CREDENTIALS,
+    },
+    Capability {
+        id: "skills.wallet_execution",
+        name: "Wallet Execution Tools",
+        domain: "wallet",
+        category: CapabilityCategory::Skills,
+        description: "Read balances and prepare/confirm/execute transfers, swaps, and contract calls across the connected wallet (EVM, BTC, Solana, Tron). Quote-first; signing stays local.",
+        how_to: "Use wallet.* RPC methods (balances, prepare_transfer, prepare_swap, prepare_contract_call, execute_prepared) via the agent or core_rpc_relay.",
+        status: CapabilityStatus::Beta,
+        privacy: LOCAL_CREDENTIALS,
     },
     Capability {
         id: "skills.connect_crypto_exchange",
@@ -711,7 +747,10 @@ const CAPABILITIES: &[Capability] = &[
         name: "Manage Privacy and Analytics",
         domain: "settings",
         category: CapabilityCategory::Settings,
-        description: "Control privacy, analytics, and related data handling preferences.",
+        description: "Control privacy, analytics, and related data handling preferences. \
+            When enabled, anonymous crash reports are sent to Sentry and anonymous usage \
+            analytics (page views, feature engagement) are sent to Google Analytics. \
+            No personal data, messages, or credentials are ever included.",
         how_to: "Settings > Privacy (direct route)",
         status: CapabilityStatus::Stable,
         privacy: DIAGNOSTICS_TO_BACKEND,
@@ -859,25 +898,69 @@ const CAPABILITIES: &[Capability] = &[
         privacy: None,
     },
     // ── Update ──────────────────────────────────────────────────────────────
+    // ── Meet ────────────────────────────────────────────────────────────────
+    Capability {
+        id: "meet.join_call",
+        name: "Join Google Meet Calls",
+        domain: "meet",
+        category: CapabilityCategory::Channels,
+        description: "Join a Google Meet call as an anonymous guest in a dedicated CEF webview \
+                      window with an isolated profile. The agent automatically dismisses the \
+                      device-check, types its display name, and clicks Ask-to-join via CDP; the \
+                      host admits the agent from the Meet waiting room.",
+        how_to: "Intelligence > Calls",
+        status: CapabilityStatus::Beta,
+        privacy: Some(CapabilityPrivacy {
+            leaves_device: true,
+            data_kind: PrivacyDataKind::Metadata,
+            destinations: &["Google Meet"],
+        }),
+    },
+    Capability {
+        id: "meet_agent.live_loop",
+        name: "Live Meet Agent — Listen + Speak",
+        domain: "meet_agent",
+        category: CapabilityCategory::Automation,
+        description: "While the agent is in a Google Meet call, it listens to the other \
+                      participants by tapping the embedded webview's audio output, runs \
+                      VAD-segmented speech-to-text, decides whether to respond, and speaks \
+                      back through a virtual microphone the embedded Chromium reads as if \
+                      it were a real input device. No system audio permission required — \
+                      capture and playback both stay inside the CEF process.",
+        how_to: "Automatic once a Meet call is open via Intelligence > Calls.",
+        status: CapabilityStatus::Beta,
+        privacy: Some(CapabilityPrivacy {
+            leaves_device: true,
+            data_kind: PrivacyDataKind::Derived,
+            destinations: &["Google Meet", "ElevenLabs (STT/TTS via hosted backend)"],
+        }),
+    },
+    // ── Update ──────────────────────────────────────────────────────────────
     Capability {
         id: "update.check",
         name: "Check for Core Updates",
         domain: "update",
         category: CapabilityCategory::Settings,
-        description: "Query GitHub Releases to see if a newer core binary is available.",
-        how_to: "Settings > Developer Options > Check for Updates",
+        description: "Query GitHub Releases to see if a newer core binary is available. \
+                      Available to the orchestrator agent as the `update_check` tool so the \
+                      user can ask 'am I up to date?' in chat.",
+        how_to: "Settings > Developer Options > Check for Updates, or ask the orchestrator in chat.",
         status: CapabilityStatus::Beta,
-        privacy: DIAGNOSTICS_TO_BACKEND,
+        privacy: GITHUB_RELEASES_METADATA,
     },
     Capability {
         id: "update.apply",
         name: "Apply Core Update",
         domain: "update",
         category: CapabilityCategory::Settings,
-        description: "Download and stage a newer core binary, then restart the sidecar.",
-        how_to: "Settings > Developer Options > Apply Update",
+        description: "Download and stage a newer core binary. Desktop builds can self-restart; \
+                      headless deployments can hand restart off to a supervisor. Exposed to \
+                      the orchestrator agent as the `update_apply` tool, gated behind explicit \
+                      user consent (the agent must confirm via `ask_user_clarification` before \
+                      invoking) and the `config.update.rpc_mutations_enabled` policy switch.",
+        how_to: "Settings > Developer Options > Apply Update, or confirm an in-chat update prompt from the orchestrator.",
         status: CapabilityStatus::Beta,
-        privacy: None,
+        privacy: GITHUB_RELEASES_METADATA,
     },
 ];
 

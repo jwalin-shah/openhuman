@@ -50,6 +50,13 @@ export interface LocalAiAssetsStatus {
   stt: LocalAiAssetStatus;
   tts: LocalAiAssetStatus;
   quantization: string;
+  /**
+   * True when the core can find an Ollama binary on disk. When false the UI
+   * should render an "Install Ollama" CTA instead of model state — every
+   * Ollama-backed asset will be reported as `missing` and `/api/tags`
+   * probes are skipped entirely (no 30s timeout).
+   */
+  ollama_available: boolean;
 }
 
 export interface LocalAiDownloadProgressItem {
@@ -78,6 +85,8 @@ export interface LocalAiDownloadsProgress {
   embedding: LocalAiDownloadProgressItem;
   stt: LocalAiDownloadProgressItem;
   tts: LocalAiDownloadProgressItem;
+  /** Mirrors `LocalAiAssetsStatus.ollama_available` — see that field. */
+  ollama_available: boolean;
 }
 
 export interface LocalAiEmbeddingResult {
@@ -195,8 +204,14 @@ export interface ApplyPresetResult {
   local_ai_enabled?: boolean;
 }
 
+export type RepairAction =
+  | { action: 'install_ollama' }
+  | { action: 'start_server'; binary_path: string | null }
+  | { action: 'pull_model'; model: string };
+
 export interface LocalAiDiagnostics {
   ollama_running: boolean;
+  ollama_base_url: string;
   ollama_binary_path: string | null;
   vision_mode?: string;
   installed_models: Array<{ name: string; size?: number | null; modified_at?: string | null }>;
@@ -209,6 +224,7 @@ export interface LocalAiDiagnostics {
     vision_found: boolean;
   };
   issues: string[];
+  repair_actions: RepairAction[];
   ok: boolean;
 }
 

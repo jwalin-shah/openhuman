@@ -33,6 +33,46 @@ use crate::openhuman::memory::conversations::ConversationMessage;
 use crate::openhuman::providers::{ChatMessage, ChatRequest, Provider, ToolCall};
 use crate::openhuman::tools::{Tool, ToolCategory, ToolSpec};
 
+/// Prompt suffix injected into every typed sub-agent run.
+///
+/// Purpose:
+/// - make the child explicitly aware it is acting as a sub-agent
+/// - keep delegated outputs concise so parent-context growth stays bounded
+/// - discourage verbose restatement of the delegated task/context
+const SUBAGENT_ROLE_CONTRACT_SUFFIX: &str = "## Sub-agent Role Contract\n\n\
+You are a sub-agent working for a parent OpenHuman agent, not a direct end-user assistant.\n\
+- Stay tightly scoped to the delegated task.\n\
+- Keep tool arguments and follow-up prompts compact, include only required fields/context.\n\
+- Keep your final response concise and synthesis-ready for the parent, prefer short bullets or short paragraphs.\n\
+- Do not restate the full task/context unless strictly required for correctness.\n";
+
+fn append_subagent_role_contract(base_prompt: String, agent_id: &str) -> String {
+    if base_prompt.contains(SUBAGENT_ROLE_CONTRACT_SUFFIX.trim()) {
+        tracing::debug!(
+            agent_id = %agent_id,
+            base_chars = base_prompt.chars().count(),
+            "[subagent_runner] sub-agent role contract already present in system prompt"
+        );
+        return base_prompt;
+    }
+
+    let mut prompt = base_prompt;
+    if !prompt.ends_with('\n') {
+        prompt.push('\n');
+    }
+    prompt.push('\n');
+    prompt.push_str(SUBAGENT_ROLE_CONTRACT_SUFFIX);
+
+    tracing::debug!(
+        agent_id = %agent_id,
+        suffix_chars = SUBAGENT_ROLE_CONTRACT_SUFFIX.chars().count(),
+        final_chars = prompt.chars().count(),
+        "[subagent_runner] appended sub-agent role contract to system prompt"
+    );
+
+    prompt
+}
+
 /// Lazy resolver that lets `integrations_agent` recover when the model
 /// calls a Composio action slug that exists in the bound toolkit's full
 /// catalogue but was filtered out of the up-front fuzzy top-K. On a
@@ -99,10 +139,35 @@ pub async fn run_subagent(
     // want to gate on it (e.g. `composio_execute` rejecting
     // Write/Admin slugs under `ReadOnly`) read it via
     // `current_sandbox_mode()`; tools that don't care just ignore it.
-    let outcome = with_current_sandbox_mode(definition.sandbox_mode, async {
+    let mut outcome = with_current_sandbox_mode(definition.sandbox_mode, async {
         run_typed_mode(definition, task_prompt, &options, &parent, &task_id).await
     })
     .await?;
+
+    // Truncate result to the definition's cap if set.
+    // Use char-count (not byte-length) to avoid panicking on multi-byte
+    // UTF-8 sequences at the truncation boundary.
+    if let Some(cap) = definition.max_result_chars {
+        let original_chars = outcome.output.chars().count();
+        if original_chars > cap {
+            tracing::debug!(
+                agent_id = %definition.id,
+                original_chars,
+                cap,
+                "[subagent_runner] truncating oversized result to max_result_chars cap"
+            );
+            // Find the byte offset of the cap-th character boundary so
+            // `truncate` never lands mid-codepoint.
+            let byte_offset = outcome
+                .output
+                .char_indices()
+                .nth(cap)
+                .map(|(i, _)| i)
+                .unwrap_or(outcome.output.len());
+            outcome.output.truncate(byte_offset);
+            outcome.output.push_str("\n[...truncated]");
+        }
+    }
 
     tracing::info!(
         agent_id = %definition.id,
@@ -675,6 +740,8 @@ async fn run_typed_mode(
         }
     };
 
+    let system_prompt = append_subagent_role_contract(system_prompt, &definition.id);
+
     // ── Build the user message (with optional context prefix) ──────────
     // Merge explicit orchestrator context with the parent's auto-loaded
     // memory context, but only when the definition opts into memory
@@ -688,7 +755,7 @@ async fn run_typed_mode(
 
     let mut context_parts: Vec<&str> = Vec::new();
     if !definition.omit_memory_context {
-        if let Some(ref mem_ctx) = parent.memory_context {
+        if let Some(ref mem_ctx) = *parent.memory_context {
             context_parts.push(mem_ctx);
         }
     }
@@ -1319,3 +1386,7 @@ fn parse_tool_arguments(arguments: &str) -> serde_json::Value {
 #[cfg(test)]
 #[path = "ops_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ops_truncation_tests.rs"]
+mod truncation_tests;

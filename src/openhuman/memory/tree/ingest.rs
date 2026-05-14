@@ -9,6 +9,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::core::event_bus::{publish_global, DomainEvent};
 use crate::openhuman::config::Config;
 use crate::openhuman::memory::tree::canonicalize::{
     chat::{self, ChatBatch},
@@ -21,6 +22,11 @@ use crate::openhuman::memory::tree::content_store;
 use crate::openhuman::memory::tree::jobs::{self, ExtractChunkPayload, NewJob};
 use crate::openhuman::memory::tree::score::{self, ScoreResult, ScoringConfig};
 use crate::openhuman::memory::tree::store;
+use crate::openhuman::memory::tree::types::SourceKind;
+use crate::openhuman::memory::tree::util::redact::redact;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const BODY_PREVIEW_MAX_BYTES: usize = 2048;
 
 /// Outcome of one ingest call.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +39,11 @@ pub struct IngestResult {
     pub chunks_dropped: usize,
     /// IDs of all chunks written and queued.
     pub chunk_ids: Vec<String>,
+    /// True when this ingest was a no-op because `(source_kind, source_id)`
+    /// had already been ingested. Memory items are append-only — the
+    /// summariser tree must not see the same source twice.
+    #[serde(default)]
+    pub already_ingested: bool,
 }
 
 impl IngestResult {
@@ -42,6 +53,17 @@ impl IngestResult {
             chunks_written: 0,
             chunks_dropped: 0,
             chunk_ids: Vec::new(),
+            already_ingested: false,
+        }
+    }
+
+    fn already_ingested(source_id: &str) -> Self {
+        Self {
+            source_id: source_id.to_string(),
+            chunks_written: 0,
+            chunks_dropped: 0,
+            chunk_ids: Vec::new(),
+            already_ingested: true,
         }
     }
 }
@@ -55,6 +77,12 @@ pub async fn ingest_chat(
     tags: Vec<String>,
     batch: ChatBatch,
 ) -> Result<IngestResult> {
+    // No source-level gate for chat: a chat `source_id` (e.g.
+    // `slack:{connection_id}`) is a stream identifier — many batches /
+    // buckets accumulate into the same source tree over time. The gate
+    // would make every bucket after the first a no-op. Chunk-level
+    // idempotency (`chunk_id` includes content) still prevents true
+    // replay duplicates from reaching the summariser.
     let canonical =
         match chat::canonicalise(source_id, owner, &tags, batch).map_err(anyhow::Error::msg)? {
             Some(c) => c,
@@ -72,6 +100,11 @@ pub async fn ingest_email(
     tags: Vec<String>,
     thread: EmailThread,
 ) -> Result<IngestResult> {
+    // No source-level gate for email: gmail per-participant ingest
+    // groups many threads under one `source_id` (e.g.
+    // `gmail:{participants_hash}`) and appends as new threads arrive.
+    // The gate would block all but the first thread. Chunk-level
+    // idempotency still protects against true replays.
     let canonical =
         match email::canonicalise(source_id, owner, &tags, thread).map_err(anyhow::Error::msg)? {
             Some(c) => c,
@@ -89,6 +122,13 @@ pub async fn ingest_document(
     tags: Vec<String>,
     doc: DocumentInput,
 ) -> Result<IngestResult> {
+    if already_ingested(config, SourceKind::Document, source_id).await? {
+        log::debug!(
+            "[memory_tree::ingest] skip ingest_document — source_id_hash={} already ingested",
+            redact(source_id)
+        );
+        return Ok(IngestResult::already_ingested(source_id));
+    }
     let canonical =
         match document::canonicalise(source_id, owner, &tags, doc).map_err(anyhow::Error::msg)? {
             Some(c) => c,
@@ -97,11 +137,40 @@ pub async fn ingest_document(
     persist(config, source_id, canonical).await
 }
 
+/// Best-effort pre-canonicalisation check. The transactional claim inside
+/// [`persist`] is what actually serialises concurrent ingests; this lookup
+/// just spares the canonicaliser when we already know the source is a dup.
+async fn already_ingested(
+    config: &Config,
+    source_kind: SourceKind,
+    source_id: &str,
+) -> Result<bool> {
+    let cfg = config.clone();
+    let sid = source_id.to_string();
+    tokio::task::spawn_blocking(move || store::is_source_ingested(&cfg, source_kind, &sid))
+        .await
+        .map_err(|e| anyhow::anyhow!("already_ingested join error: {e}"))?
+}
+
 async fn persist(
     config: &Config,
     source_id: &str,
     canonical: CanonicalisedSource,
 ) -> Result<IngestResult> {
+    let source_kind_for_store = canonical.metadata.source_kind;
+
+    // Capture body_preview before the canonical markdown is moved into the chunker.
+    // For email and document sources: the trailing canonical markdown, capped at
+    // 2 048 bytes, is enough for signature parsing and similar lightweight
+    // subscribers. Chat sources are conversational and have no trailing structure
+    // worth scanning, so they get body_preview = None.
+    let body_preview: Option<String> = match source_kind_for_store {
+        SourceKind::Email | SourceKind::Document => {
+            Some(markdown_body_preview(&canonical.markdown))
+        }
+        _ => None,
+    };
+
     let input = ChunkerInput {
         source_kind: canonical.metadata.source_kind,
         source_id: source_id.to_string(),
@@ -140,10 +209,44 @@ async fn persist(
     let config_owned = config.clone();
     let staged_for_store = staged.clone();
     let results_for_store = all_results.clone();
-    let written = tokio::task::spawn_blocking(move || -> Result<usize> {
+    let source_id_for_store = source_id.to_string();
+    let written = tokio::task::spawn_blocking(move || -> Result<Option<usize>> {
         use std::collections::{HashMap, HashSet};
         store::with_connection(&config_owned, |conn| {
             let tx = conn.unchecked_transaction()?;
+
+            // Authoritative source-level gate (documents only).
+            //
+            // For documents, `source_id` identifies a single immutable
+            // file (one notion page, one drive doc). `is_source_ingested`
+            // above is a best-effort fast-path; this row insert is what
+            // actually serialises concurrent ingests of the same
+            // document and prevents the same content from flowing
+            // through extract → admit → buffer → seal twice.
+            //
+            // Chat and email don't get this gate: their `source_id`
+            // is a *stream* identifier (e.g. slack workspace, gmail
+            // participant group) under which many batches / threads
+            // accumulate over time. The chunk-level idempotency in
+            // the rest of this transaction is enough to swallow
+            // genuine replays without blocking legitimate appends.
+            if source_kind_for_store == SourceKind::Document {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let claimed = store::claim_source_ingest_tx(
+                    &tx,
+                    source_kind_for_store,
+                    &source_id_for_store,
+                    now_ms,
+                )?;
+                if !claimed {
+                    log::debug!(
+                        "[memory_tree::ingest] persist gate: document already ingested source_id_hash={}",
+                        redact(&source_id_for_store)
+                    );
+                    // Drop the (empty) transaction implicitly; nothing to commit.
+                    return Ok(None);
+                }
+            }
 
             // Read each chunk's CURRENT lifecycle BEFORE the upsert. This
             // is the "did this chunk exist before this batch" snapshot,
@@ -205,20 +308,69 @@ async fn persist(
                 let _ = jobs::enqueue_tx(&tx, &extract)?;
             }
             tx.commit()?;
-            Ok(n)
+            Ok(Some(n))
         })
     })
     .await
     .map_err(|e| anyhow::anyhow!("persist join error: {e}"))??;
 
+    let written = match written {
+        Some(n) => n,
+        None => {
+            // Lost the race against a concurrent ingest of the same source —
+            // the other writer claimed the row first. No work was committed.
+            return Ok(IngestResult::already_ingested(source_id));
+        }
+    };
+
     jobs::wake_workers();
+
+    let chunk_ids: Vec<String> = staged.iter().map(|s| s.chunk.id.clone()).collect();
+
+    // Emit DocumentCanonicalized so Phase 2 producers (e.g. email-signature parser)
+    // can react to new canonicalised content. Non-fatal: ingest has already succeeded.
+    // `source_kind_for_store` is Copy so it is still accessible here after the closure.
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    publish_global(DomainEvent::DocumentCanonicalized {
+        source_id: source_id.to_string(),
+        source_kind: source_kind_for_store.as_str().to_string(),
+        chunks_written: written,
+        chunk_ids: chunk_ids.clone(),
+        canonicalized_at: now_secs,
+        body_preview,
+    });
+    tracing::debug!(
+        "[memory::tree::ingest] published DocumentCanonicalized source_id={} chunks={}",
+        source_id,
+        written
+    );
 
     Ok(IngestResult {
         source_id: source_id.to_string(),
         chunks_written: written,
         chunks_dropped: dropped,
-        chunk_ids: staged.iter().map(|s| s.chunk.id.clone()).collect(),
+        chunk_ids,
+        already_ingested: false,
     })
+}
+
+/// Returns the trailing slice of `md` capped at [`BODY_PREVIEW_MAX_BYTES`] bytes.
+///
+/// Uses `ceil_char_boundary` (rounds the cut point *forward*) so the returned
+/// slice is always `<= BODY_PREVIEW_MAX_BYTES` bytes — `floor_char_boundary`
+/// (rounds backward) can return up to 3 extra bytes when the cut falls inside
+/// a multi-byte codepoint, violating the hard cap.
+fn markdown_body_preview(md: &str) -> String {
+    let len = md.len();
+    if len <= BODY_PREVIEW_MAX_BYTES {
+        md.to_string()
+    } else {
+        let start = md.ceil_char_boundary(len - BODY_PREVIEW_MAX_BYTES);
+        md[start..].to_string()
+    }
 }
 
 #[cfg(test)]
@@ -282,7 +434,7 @@ mod tests {
         drain_until_idle(&cfg).await.unwrap();
 
         // Final lifecycle is `buffered`: extract → admitted → append_buffer → buffered.
-        // The single packed chunk does not cross TOKEN_BUDGET so no seal fires.
+        // The single packed chunk does not cross INPUT_TOKEN_BUDGET so no seal fires.
         assert_eq!(
             count_chunks_by_lifecycle_status(&cfg, CHUNK_STATUS_BUFFERED).unwrap(),
             1
@@ -343,6 +495,76 @@ mod tests {
         assert_eq!(out.chunks_written, 0);
         assert_eq!(count_chunks(&cfg).unwrap(), 0);
         assert_eq!(count_scores(&cfg).unwrap(), 0);
+    }
+
+    #[test]
+    fn markdown_body_preview_respects_utf8_boundary_and_byte_cap() {
+        let md = format!("{}{}{}\n", "a".repeat(17), '\u{200c}', "b".repeat(2045));
+        let requested_start = md.len() - BODY_PREVIEW_MAX_BYTES;
+        assert!(
+            !md.is_char_boundary(requested_start),
+            "test fixture must put the requested preview boundary inside a multi-byte character"
+        );
+
+        let preview = markdown_body_preview(&md);
+
+        assert!(preview.len() <= BODY_PREVIEW_MAX_BYTES);
+        assert_eq!(preview, format!("{}\n", "b".repeat(2045)));
+    }
+
+    #[tokio::test]
+    async fn ingest_document_handles_utf8_at_body_preview_boundary() {
+        let (_tmp, cfg) = test_config();
+        let body = format!("{}{}{}", "a".repeat(17), '\u{200c}', "b".repeat(2045));
+
+        let doc = DocumentInput {
+            provider: "notion".into(),
+            title: "Unicode boundary".into(),
+            body,
+            modified_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            source_ref: Some("notion://page/unicode-boundary".into()),
+        };
+
+        let out = ingest_document(&cfg, "notion:utf8-boundary", "alice", vec![], doc)
+            .await
+            .unwrap();
+        assert!(!out.already_ingested);
+        assert!(out.chunks_written >= 1);
+    }
+
+    #[tokio::test]
+    async fn second_ingest_document_with_same_source_id_is_short_circuited() {
+        let (_tmp, cfg) = test_config();
+        let doc = DocumentInput {
+            provider: "notion".into(),
+            title: "Launch plan".into(),
+            body: "Phoenix ships Friday after staging review. alice@example.com owns this.".into(),
+            modified_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            source_ref: Some("notion://page/abc".into()),
+        };
+        let first = ingest_document(&cfg, "notion:abc", "alice", vec![], doc.clone())
+            .await
+            .unwrap();
+        assert!(!first.already_ingested);
+        assert!(first.chunks_written >= 1);
+
+        // Even with completely different content under the same source_id,
+        // the second ingest must not write anything: documents are
+        // append-only and the source_id is the dedup key.
+        let mutated = DocumentInput {
+            body: "totally different content that should NOT make it into the tree".into(),
+            ..doc
+        };
+        let second = ingest_document(&cfg, "notion:abc", "alice", vec![], mutated)
+            .await
+            .unwrap();
+        assert!(second.already_ingested);
+        assert_eq!(second.chunks_written, 0);
+        assert!(second.chunk_ids.is_empty());
+
+        drain_until_idle(&cfg).await.unwrap();
+        // Only the first ingest's chunks made it into the store.
+        assert_eq!(count_chunks(&cfg).unwrap(), first.chunks_written as u64);
     }
 
     #[tokio::test]

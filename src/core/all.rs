@@ -167,8 +167,10 @@ fn build_registered_controllers() -> Vec<RegisteredController> {
     controllers.extend(crate::openhuman::memory::all_memory_tree_registered_controllers());
     // Memory tree retrieval layer (#710 — LLM-callable read tools over the tree)
     controllers.extend(crate::openhuman::memory::all_retrieval_registered_controllers());
-    // Slack → memory-tree ingestion engine (backfill + poll + 6hr bucket flush)
-    controllers.extend(crate::openhuman::memory::all_slack_ingestion_registered_controllers());
+    // Slack → memory-tree ingestion engine (per-message ingest, no bucketing)
+    controllers.extend(
+        crate::openhuman::composio::providers::slack::all_slack_memory_registered_controllers(),
+    );
     // Per-connection memory sync status, controls, and progress (#1136)
     controllers.extend(crate::openhuman::memory::all_memory_sync_status_registered_controllers());
     // Link shortener for long tracking URLs — saves LLM tokens
@@ -180,6 +182,8 @@ fn build_registered_controllers() -> Vec<RegisteredController> {
     controllers.extend(crate::openhuman::billing::all_billing_registered_controllers());
     // Team and role management
     controllers.extend(crate::openhuman::team::all_team_registered_controllers());
+    // Local wallet metadata and onboarding status
+    controllers.extend(crate::openhuman::wallet::all_wallet_registered_controllers());
     // Local assistive surfaces over third-party provider apps
     controllers.extend(
         crate::openhuman::provider_surfaces::all_provider_surfaces_registered_controllers(),
@@ -207,6 +211,10 @@ fn build_registered_controllers() -> Vec<RegisteredController> {
     );
     // Integration notification ingest, triage, and per-provider settings
     controllers.extend(crate::openhuman::notifications::all_notifications_registered_controllers());
+    // Google Meet call-join request validation (shell handles the webview)
+    controllers.extend(crate::openhuman::meet::all_meet_registered_controllers());
+    // Live meet-agent loop: STT/LLM/TTS over the open call's audio.
+    controllers.extend(crate::openhuman::meet_agent::all_meet_agent_registered_controllers());
     // Structured WhatsApp Web data — agent-facing read-only controllers (list/search).
     // The write-path ingest controller is registered separately in build_internal_only_controllers.
     controllers.extend(crate::openhuman::whatsapp_data::all_whatsapp_data_registered_controllers());
@@ -263,12 +271,15 @@ fn build_declared_controller_schemas() -> Vec<ControllerSchema> {
     schemas.extend(crate::openhuman::memory::all_memory_controller_schemas());
     schemas.extend(crate::openhuman::memory::all_memory_tree_controller_schemas());
     schemas.extend(crate::openhuman::memory::all_retrieval_controller_schemas());
-    schemas.extend(crate::openhuman::memory::all_slack_ingestion_controller_schemas());
+    schemas.extend(
+        crate::openhuman::composio::providers::slack::all_slack_memory_controller_schemas(),
+    );
     schemas.extend(crate::openhuman::memory::all_memory_sync_status_controller_schemas());
     schemas.extend(crate::openhuman::redirect_links::all_redirect_links_controller_schemas());
     schemas.extend(crate::openhuman::referral::all_referral_controller_schemas());
     schemas.extend(crate::openhuman::billing::all_billing_controller_schemas());
     schemas.extend(crate::openhuman::team::all_team_controller_schemas());
+    schemas.extend(crate::openhuman::wallet::all_wallet_controller_schemas());
     schemas.extend(crate::openhuman::provider_surfaces::all_provider_surfaces_controller_schemas());
     schemas.extend(crate::openhuman::text_input::all_text_input_controller_schemas());
     schemas.extend(crate::openhuman::voice::all_voice_controller_schemas());
@@ -285,6 +296,10 @@ fn build_declared_controller_schemas() -> Vec<ControllerSchema> {
     );
     // Integration notification ingest, triage, and per-provider settings
     schemas.extend(crate::openhuman::notifications::all_notifications_controller_schemas());
+    // Google Meet call-join request validation
+    schemas.extend(crate::openhuman::meet::all_meet_controller_schemas());
+    // Live meet-agent listening + speaking loop
+    schemas.extend(crate::openhuman::meet_agent::all_meet_agent_controller_schemas());
     // Structured WhatsApp Web data — local SQLite store, agent-queryable
     schemas.extend(crate::openhuman::whatsapp_data::all_whatsapp_data_controller_schemas());
     schemas
@@ -328,6 +343,7 @@ pub fn namespace_description(namespace: &str) -> Option<&'static str> {
         "local_ai" => Some("Local AI chat, inference, downloads, and media operations."),
         "migrate" => Some("Data migration utilities."),
         "screen_intelligence" => Some("Screen capture, permissions, and accessibility automation."),
+        "security" => Some("Security policy and autonomy guardrail metadata."),
         "service" => Some("Desktop service lifecycle management."),
         "skills" => Some("Discovered SKILL.md skills and their bundled resources."),
         "socket" => Some("Skills runtime socket bridge controls."),
@@ -344,6 +360,7 @@ pub fn namespace_description(namespace: &str) -> Option<&'static str> {
         "referral" => Some("Referral codes, stats, and apply flows via the hosted backend API."),
         "billing" => Some("Subscription plan, payment links, and credit top-up via the backend."),
         "team" => Some("Team member management, invites, and role changes via the backend."),
+        "wallet" => Some("Local wallet onboarding status and derived multi-chain account metadata."),
         "provider_surfaces" => Some(
             "Local-first assistive surfaces for provider events, respond queues, and drafts.",
         ),
@@ -371,6 +388,14 @@ pub fn namespace_description(namespace: &str) -> Option<&'static str> {
         "notification" => Some(
             "Integration notification ingest, triage scoring, listing, read-state, \
              and per-provider routing settings.",
+        ),
+        "meet" => Some(
+            "Validate Google Meet call-join requests and mint a request_id; the desktop \
+             shell opens the embedded CEF webview that joins the call as an anonymous guest.",
+        ),
+        "meet_agent" => Some(
+            "Live agent loop for an open Google Meet call: shell streams inbound PCM, \
+             core runs VAD-segmented STT → LLM → TTS, shell pulls synthesized PCM back.",
         ),
         "whatsapp_data" => Some(
             "Structured WhatsApp conversation and message store — list chats, read messages, and search across WhatsApp Web data.",

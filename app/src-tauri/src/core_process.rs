@@ -104,7 +104,52 @@ impl CoreProcessHandle {
     }
 
     pub async fn ensure_running(&self) -> Result<(), String> {
+        // Idempotent fast path: if we already spawned the embedded server in
+        // *this* process and it's still alive on the port, the listener is
+        // us — return Ok without identifying or taking over. Without this,
+        // a second `start_core_process` call (e.g. HMR re-mounting the boot
+        // gate) sees its own port as bound, classifies the listener as
+        // "stale OpenHuman", and walks into the SIGTERM/SIGKILL takeover
+        // path against itself. (#1130 takeover is meant to recover from
+        // *external* leftover binaries, not our own in-process spawn.)
+        {
+            let guard = self.task.lock().await;
+            if let Some(task) = guard.as_ref() {
+                if !task.is_finished() && self.is_rpc_port_open().await {
+                    log::debug!(
+                        "[core] ensure_running: embedded task already running on port {} — no-op",
+                        self.port
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         if self.is_rpc_port_open().await {
+            // Idempotent fast-path: if we already own a running embedded
+            // task, the listener on this port is us — not a stale external
+            // process. Without this short-circuit, a second `ensure_running`
+            // call (from BootCheckGate re-render, React StrictMode mount, or
+            // any double-invoke of `start_core_process`) hits the
+            // `identify_listener` path, identifies the listener as
+            // OpenHuman, calls `takeover_stale_listener`, and aborts with
+            // "stale-listener pid <self> matches the Tauri host pid;
+            // refusing to self-terminate". (#1316 introduced the
+            // frontend-driven `start_core_process` invoke without
+            // hardening `ensure_running` against double-invoke.)
+            {
+                let guard = self.task.lock().await;
+                if let Some(task) = guard.as_ref() {
+                    if !task.is_finished() {
+                        log::debug!(
+                            "[core] ensure_running: embedded task already running on port {}, returning Ok (idempotent)",
+                            self.port
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+
             if reuse_existing_listener_enabled() {
                 log::warn!(
                     "[core] OPENHUMAN_CORE_REUSE_EXISTING=1 — attaching to whatever is listening on port {} without identification (legacy behavior)",
@@ -127,7 +172,11 @@ impl CoreProcessHandle {
                         "Core RPC port {} is in use by something that is not an OpenHuman core ({reason}). Refusing to attach (set OPENHUMAN_CORE_REUSE_EXISTING=1 to override) — quit the other process or set OPENHUMAN_CORE_PORT to a different port and relaunch.",
                         self.port
                     );
-                    log::error!("[core] {msg}");
+                    if is_expected_port_clash(&reason) {
+                        log::warn!("[core] {msg}");
+                    } else {
+                        log::error!("[core] {msg}");
+                    }
                     return Err(msg);
                 }
             }
@@ -143,6 +192,44 @@ impl CoreProcessHandle {
                 // the same env, matching what a child sidecar would have
                 // received via Command::env.
                 std::env::set_var("OPENHUMAN_CORE_TOKEN", self.rpc_token.as_str());
+
+                // Debug-build only: surface the RPC bearer token at a known
+                // tmpdir path so the e2e test runner (a separate Node process)
+                // can authenticate against the in-process core. Release builds
+                // never write this file. The test harness reads it from
+                // ${tmpdir}/openhuman-e2e-rpc-token.
+                //
+                // Token file is owner-read-write only (mode 0600) on Unix so a
+                // shared dev box doesn't leak the bearer to other local users.
+                #[cfg(debug_assertions)]
+                {
+                    use std::io::Write as _;
+                    let token_path = std::env::temp_dir().join("openhuman-e2e-rpc-token");
+                    let write_result = (|| -> std::io::Result<()> {
+                        let mut options = std::fs::OpenOptions::new();
+                        options.create(true).write(true).truncate(true);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::OpenOptionsExt as _;
+                            options.mode(0o600);
+                        }
+                        let mut file = options.open(&token_path)?;
+                        file.write_all(self.rpc_token.as_bytes())?;
+                        file.sync_all()?;
+                        Ok(())
+                    })();
+                    if let Err(err) = write_result {
+                        log::warn!(
+                            "[core] failed to write e2e token file at {}: {err}",
+                            token_path.display()
+                        );
+                    } else {
+                        log::debug!(
+                            "[core] wrote e2e token file at {} (debug build only)",
+                            token_path.display()
+                        );
+                    }
+                }
                 log::info!("[core] spawning embedded in-process core server on port {port}");
                 let task = tokio::spawn(async move {
                     if let Err(e) = openhuman_core::core::jsonrpc::run_server_embedded(
@@ -153,7 +240,11 @@ impl CoreProcessHandle {
                     )
                     .await
                     {
-                        log::error!("[core] embedded core server exited with error: {e}");
+                        if is_expected_port_clash(&e.to_string()) {
+                            log::warn!("[core] embedded core server exited with error: {e}");
+                        } else {
+                            log::error!("[core] embedded core server exited with error: {e}");
+                        }
                     } else {
                         log::info!("[core] embedded core server exited cleanly");
                     }
@@ -297,14 +388,19 @@ impl CoreProcessHandle {
         self.shutdown().await;
 
         if !had_managed_task && self.is_rpc_port_open().await {
-            log::error!(
+            let msg = format!(
+                "Core RPC port {} is already in use by another process (OpenHuman did not start it). Quit any `openhuman-core run` in a terminal or set OPENHUMAN_CORE_PORT to a different port, then relaunch the app.",
+                self.port
+            );
+            // Precondition check: by the time we hit this branch we already
+            // know the port is held by something OpenHuman did not spawn, so
+            // the clash is always benign environment state — no need to gate
+            // through `is_expected_port_clash`.
+            log::warn!(
                 "[core] restart: nothing to stop but port {} is in use — another process owns it",
                 self.port
             );
-            return Err(format!(
-                "Core RPC port {} is already in use by another process (OpenHuman did not start it). Quit any `openhuman-core run` in a terminal or set OPENHUMAN_CORE_PORT to a different port, then relaunch the app.",
-                self.port
-            ));
+            return Err(msg);
         }
 
         const POLL_MS: u64 = 50;
@@ -503,6 +599,20 @@ fn is_openhuman_root_body(body: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns true when a port conflict is deterministic environment state, not
+/// a high-signal unknown squatter worth sending to Sentry at error level.
+fn is_expected_port_clash(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.contains("error sending request for url")
+        || reason.contains("connection refused")
+        || reason.contains("returned status 404")
+        || reason.contains("returned status 200")
+        || reason.contains("body did not identify as openhuman")
+        || reason.contains("already in use by another process")
+        || reason.contains("os error 10013")
+        || reason.contains("wsaeacces")
+}
+
 #[cfg(unix)]
 fn find_pid_on_port(port: u16) -> Option<u32> {
     let output = std::process::Command::new("lsof")
@@ -517,8 +627,11 @@ fn find_pid_on_port(port: u16) -> Option<u32> {
 
 #[cfg(windows)]
 fn find_pid_on_port(port: u16) -> Option<u32> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("netstat")
         .args(["-ano", "-p", "TCP"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if !output.status.success() {

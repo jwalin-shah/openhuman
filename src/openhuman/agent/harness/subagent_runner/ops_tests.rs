@@ -20,6 +20,7 @@ fn make_def_named_tools(names: &[&str]) -> AgentDefinition {
         skill_filter: None,
         extra_tools: vec![],
         max_iterations: 5,
+        max_result_chars: None,
         timeout_secs: None,
         sandbox_mode: crate::openhuman::agent::harness::definition::SandboxMode::None,
         background: false,
@@ -113,6 +114,21 @@ fn filter_skill_filter_combined_with_named_scope() {
 #[test]
 fn subagent_mode_as_str_roundtrip() {
     assert_eq!(SubagentMode::Typed.as_str(), "typed");
+}
+
+#[test]
+fn append_subagent_role_contract_adds_role_and_brevity_rules() {
+    let rendered = append_subagent_role_contract("base prompt".to_string(), "researcher");
+    assert!(rendered.contains("## Sub-agent Role Contract"));
+    assert!(rendered.contains("You are a sub-agent working for a parent OpenHuman agent"));
+    assert!(rendered.contains("Keep your final response concise and synthesis-ready"));
+}
+
+#[test]
+fn append_subagent_role_contract_is_idempotent() {
+    let once = append_subagent_role_contract("base prompt".to_string(), "researcher");
+    let twice = append_subagent_role_contract(once.clone(), "researcher");
+    assert_eq!(once, twice, "contract suffix should only appear once");
 }
 
 // ── End-to-end runner tests with mock provider ────────────────────────
@@ -217,7 +233,7 @@ fn make_parent(provider: Arc<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Parent
         memory: noop_memory(),
         agent_config: crate::openhuman::config::AgentConfig::default(),
         skills: Arc::new(vec![]),
-        memory_context: None,
+        memory_context: Arc::new(None),
         session_id: "test-session".into(),
         channel: "test".into(),
         connected_integrations: vec![],
@@ -318,6 +334,38 @@ async fn typed_mode_injects_current_date_and_time_into_user_message() {
 }
 
 #[tokio::test]
+async fn typed_mode_system_prompt_includes_subagent_role_contract() {
+    let provider = ScriptedProvider::new(vec![text_response("ok")]);
+    let parent = make_parent(provider.clone(), vec![stub("file_read")]);
+    let def = make_def_named_tools(&[]);
+
+    let _ = with_parent_context(parent, async {
+        run_subagent(
+            &def,
+            "the actual task prompt",
+            SubagentRunOptions::default(),
+        )
+        .await
+    })
+    .await
+    .unwrap();
+
+    let captured = provider.captured.lock();
+    let system_msg = captured[0]
+        .messages
+        .iter()
+        .find(|m| m.role == "system")
+        .expect("system message should be present");
+    assert!(system_msg.content.contains("## Sub-agent Role Contract"));
+    assert!(system_msg
+        .content
+        .contains("You are a sub-agent working for a parent OpenHuman agent"));
+    assert!(system_msg
+        .content
+        .contains("Keep your final response concise and synthesis-ready"));
+}
+
+#[tokio::test]
 async fn typed_mode_returns_text_through_runner() {
     let provider = ScriptedProvider::new(vec![text_response("X is Y")]);
     let parent = make_parent(provider.clone(), vec![stub("file_read")]);
@@ -385,7 +433,9 @@ async fn typed_mode_no_memory_context_in_user_message() {
 async fn typed_mode_includes_memory_context_when_definition_allows_it() {
     let provider = ScriptedProvider::new(vec![text_response("ok")]);
     let mut parent = make_parent(provider.clone(), vec![stub("file_read")]);
-    parent.memory_context = Some("[Memory context]\n- prior fact: branch X failed\n".into());
+    parent.memory_context = Arc::new(Some(
+        "[Memory context]\n- prior fact: branch X failed\n".into(),
+    ));
     let mut def = make_def_named_tools(&[]);
     def.omit_memory_context = false;
 
@@ -634,3 +684,6 @@ async fn typed_mode_progress_emission_is_a_noop_without_sink() {
     .expect("runner should succeed");
     assert_eq!(outcome.iterations, 1);
 }
+
+// Truncation tests live in ops_truncation_tests.rs to keep this file
+// under the ~500-line guideline.

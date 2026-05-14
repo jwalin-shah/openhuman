@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { requestUsageRefresh } from '../hooks/usageRefresh';
 import { useRefetchSnapshotOnTurnEnd } from '../hooks/useRefetchSnapshotOnTurnEnd';
 import {
+  type ChatDoneEvent,
   type ChatInferenceStartEvent,
   type ChatIterationStartEvent,
   type ChatSegmentEvent,
@@ -41,6 +42,13 @@ import { IS_PROD } from '../utils/config';
 import { formatTimelineEntry, promptFromArgsBuffer } from '../utils/toolTimelineFormatting';
 
 const logChatRuntime = debug('openhuman:chat-runtime');
+const USER_FACING_AGENT_ERROR_MESSAGE =
+  'Something went wrong. Please try again.\nThis error has been reported. You can also report it on Discord.\n<openhuman-link path="community/discord">Report on Discord</openhuman-link>';
+
+const SEGMENT_DELIVERY_TTL_MS = 5 * 60 * 1000;
+const MAX_SEGMENT_DELIVERIES = 100;
+
+type SegmentDelivery = { segments: Map<number, string>; createdAt: number; lastSeenAt: number };
 
 function rtLog(message: string, fields?: Record<string, string | number | null | undefined>) {
   if (IS_PROD) return;
@@ -52,6 +60,88 @@ function rtLog(message: string, fields?: Record<string, string | number | null |
   } else {
     logChatRuntime('[chat-runtime] %s', message);
   }
+}
+
+function segmentDeliveryKey(threadId: string, requestId?: string | null): string {
+  return `${threadId}:${requestId ?? 'none'}`;
+}
+
+function pruneSegmentDeliveries(deliveries: Map<string, SegmentDelivery>, now = Date.now()) {
+  for (const [key, delivery] of deliveries) {
+    if (now - delivery.createdAt > SEGMENT_DELIVERY_TTL_MS) {
+      deliveries.delete(key);
+    }
+  }
+
+  while (deliveries.size > MAX_SEGMENT_DELIVERIES) {
+    let oldestKey: string | undefined;
+    let oldestLastSeenAt = Number.POSITIVE_INFINITY;
+    for (const [key, delivery] of deliveries) {
+      if (delivery.lastSeenAt < oldestLastSeenAt) {
+        oldestKey = key;
+        oldestLastSeenAt = delivery.lastSeenAt;
+      }
+    }
+    if (!oldestKey) break;
+    deliveries.delete(oldestKey);
+  }
+}
+
+function getOrCreateSegmentDelivery(
+  deliveries: Map<string, SegmentDelivery>,
+  key: string,
+  now = Date.now()
+): SegmentDelivery {
+  pruneSegmentDeliveries(deliveries, now);
+  const existing = deliveries.get(key);
+  if (existing) {
+    existing.lastSeenAt = now;
+    return existing;
+  }
+  const delivery = { segments: new Map<number, string>(), createdAt: now, lastSeenAt: now };
+  deliveries.set(key, delivery);
+  pruneSegmentDeliveries(deliveries, now);
+  return delivery;
+}
+
+function takeSegmentDelivery(
+  deliveries: Map<string, SegmentDelivery>,
+  key: string,
+  now = Date.now()
+): SegmentDelivery | undefined {
+  pruneSegmentDeliveries(deliveries, now);
+  const delivery = deliveries.get(key);
+  deliveries.delete(key);
+  return delivery;
+}
+
+function deleteSegmentDelivery(deliveries: Map<string, SegmentDelivery>, key: string) {
+  pruneSegmentDeliveries(deliveries);
+  deliveries.delete(key);
+}
+
+// Delivery is complete iff every expected segment_index arrived. Do NOT also
+// compare reconstructed segments against event.full_response — the server
+// trims each segment and normalises joiners during segmentation
+// (presentation.rs::segment_for_delivery), while full_response keeps the raw
+// LLM text. A byte-equality check therefore fails on virtually every
+// multi-segment turn and triggers the reconciliation path, producing a
+// duplicate assistant message.
+function hasCompleteSegmentDelivery(
+  event: ChatDoneEvent,
+  delivery: SegmentDelivery | undefined
+): boolean {
+  const expected = event.segment_total ?? 0;
+  if (expected <= 0 || !delivery) return false;
+  if (delivery.segments.size < expected) return false;
+  for (let i = 0; i < expected; i += 1) {
+    if (!delivery.segments.has(i)) return false;
+  }
+  return true;
+}
+
+function chatDoneExtraMetadata(event: ChatDoneEvent): Record<string, unknown> | undefined {
+  return event.citations?.length ? { citations: event.citations } : undefined;
 }
 
 const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
@@ -67,6 +157,7 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
   );
 
   const seenChatEventsRef = useRef<Map<string, number>>(new Map());
+  const segmentDeliveriesRef = useRef<Map<string, SegmentDelivery>>(new Map());
   const proactiveThreadCreationPromiseRef = useRef<Promise<string | null> | null>(null);
   const proactiveDispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
   const toolTimelineRef = useRef(toolTimelineByThread);
@@ -184,6 +275,24 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
     const decorateEntry = (entry: ToolTimelineEntry): ToolTimelineEntry => {
       const formatted = formatTimelineEntry(entry);
       return { ...entry, displayName: formatted.title, detail: formatted.detail };
+    };
+
+    const finishChatDoneTurn = (event: ChatDoneEvent, path: string) => {
+      rtLog('refresh_usage_counter', {
+        thread: event.thread_id,
+        request: event.request_id,
+        reason: 'chat_done',
+      });
+      requestUsageRefresh();
+      rtLog('snapshot_refetch_queued', {
+        thread: event.thread_id,
+        request: event.request_id,
+        reason: 'chat_done',
+        path,
+      });
+      refetchSnapshot();
+      dispatch(endInferenceTurn({ threadId: event.thread_id }));
+      dispatch(setActiveThread(null));
     };
 
     const findPendingDelegationContext = (
@@ -484,9 +593,13 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
           !markChatEventSeen(eventKey, { threadId: event.thread_id, requestId: event.request_id })
         )
           return;
+        const content = segmentText(event);
+        const deliveryKey = segmentDeliveryKey(event.thread_id, event.request_id);
+        const delivery = getOrCreateSegmentDelivery(segmentDeliveriesRef.current, deliveryKey);
+        delivery.segments.set(event.segment_index, content);
         void dispatch(
           addInferenceResponse({
-            content: segmentText(event),
+            content,
             threadId: event.thread_id,
             extraMetadata: event.citations?.length ? { citations: event.citations } : undefined,
           })
@@ -607,6 +720,10 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
           output_tokens: event.total_output_tokens,
         });
 
+        const deliveryKey = segmentDeliveryKey(event.thread_id, event.request_id);
+        const segmentDelivery = takeSegmentDelivery(segmentDeliveriesRef.current, deliveryKey);
+        const completeSegmentDelivery = hasCompleteSegmentDelivery(event, segmentDelivery);
+
         dispatch(
           recordChatTurnUsage({
             inputTokens: event.total_input_tokens,
@@ -630,9 +747,7 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
                 addInferenceResponse({
                   content: event.full_response,
                   threadId: event.thread_id,
-                  extraMetadata: event.citations?.length
-                    ? { citations: event.citations }
-                    : undefined,
+                  extraMetadata: chatDoneExtraMetadata(event),
                 })
               ).unwrap();
               void dispatch(
@@ -648,21 +763,42 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
                 error: error instanceof Error ? error.message : String(error),
               });
             }
-            rtLog('refresh_usage_counter', {
-              thread: event.thread_id,
-              request: event.request_id,
-              reason: 'chat_done',
-            });
-            requestUsageRefresh();
-            rtLog('snapshot_refetch_queued', {
-              thread: event.thread_id,
-              request: event.request_id,
-              reason: 'chat_done',
-              path: 'proactive',
-            });
-            refetchSnapshot();
-            dispatch(endInferenceTurn({ threadId: event.thread_id }));
-            dispatch(setActiveThread(null));
+            finishChatDoneTurn(event, 'proactive');
+          })();
+          return;
+        }
+
+        if (!completeSegmentDelivery && event.full_response.length > 0) {
+          rtLog('chat_done_segment_reconcile', {
+            thread: event.thread_id,
+            request: event.request_id,
+            expected: event.segment_total,
+            received: segmentDelivery?.segments.size ?? 0,
+            full_len: event.full_response.length,
+          });
+          void (async () => {
+            try {
+              await dispatch(
+                addInferenceResponse({
+                  content: event.full_response,
+                  threadId: event.thread_id,
+                  extraMetadata: chatDoneExtraMetadata(event),
+                })
+              ).unwrap();
+              void dispatch(
+                generateThreadTitleIfNeeded({
+                  threadId: event.thread_id,
+                  assistantMessage: event.full_response,
+                })
+              );
+            } catch (error) {
+              rtLog('chat_done_reconcile_append_failed', {
+                thread: event.thread_id,
+                request: event.request_id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            finishChatDoneTurn(event, 'segment_reconcile');
           })();
           return;
         }
@@ -673,24 +809,10 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
             assistantMessage: event.full_response,
           })
         );
-        rtLog('refresh_usage_counter', {
-          thread: event.thread_id,
-          request: event.request_id,
-          reason: 'chat_done',
-        });
-        requestUsageRefresh();
-        rtLog('snapshot_refetch_queued', {
-          thread: event.thread_id,
-          request: event.request_id,
-          reason: 'chat_done',
-          path: 'ordinary',
-        });
-        refetchSnapshot();
-        dispatch(endInferenceTurn({ threadId: event.thread_id }));
-        dispatch(setActiveThread(null));
+        finishChatDoneTurn(event, 'ordinary');
       },
       onError: event => {
-        const eventKey = `error:${event.thread_id}:${event.request_id ?? 'none'}:${event.error_type}:${event.message}`;
+        const eventKey = `error:${event.thread_id}:${event.request_id ?? 'none'}:${event.error_type}`;
         if (
           !markChatEventSeen(eventKey, { threadId: event.thread_id, requestId: event.request_id })
         )
@@ -702,6 +824,10 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
           err: event.error_type,
         });
 
+        deleteSegmentDelivery(
+          segmentDeliveriesRef.current,
+          segmentDeliveryKey(event.thread_id, event.request_id)
+        );
         dispatch(clearInferenceStatusForThread({ threadId: event.thread_id }));
         dispatch(clearStreamingAssistantForThread({ threadId: event.thread_id }));
 
@@ -717,17 +843,17 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
           const currentState = store.getState();
           const threadMessages = currentState.thread.messagesByThreadId[event.thread_id] ?? [];
           const lastMsg = threadMessages[threadMessages.length - 1];
-          if (
-            !(
-              lastMsg?.sender === 'agent' &&
-              lastMsg?.content === 'Something went wrong — please try again.'
-            )
-          ) {
+          // For the generic 'inference' type the server may send a raw internal error string;
+          // use the safe user-facing constant instead. For all other classified types
+          // (rate_limited, timeout, auth_error, etc.) the message comes from
+          // classify_inference_error() in web.rs and is already user-friendly.
+          const errorContent =
+            event.error_type === 'inference'
+              ? USER_FACING_AGENT_ERROR_MESSAGE
+              : event.message || USER_FACING_AGENT_ERROR_MESSAGE;
+          if (!(lastMsg?.sender === 'agent' && lastMsg?.content === errorContent)) {
             void dispatch(
-              addInferenceResponse({
-                content: 'Something went wrong — please try again.',
-                threadId: event.thread_id,
-              })
+              addInferenceResponse({ content: errorContent, threadId: event.thread_id })
             );
           }
 
@@ -749,6 +875,41 @@ const ChatRuntimeProvider = ({ children }: { children: React.ReactNode }) => {
       cleanup();
     };
   }, [dispatch, resolveVisibleThreadForProactive, socketStatus, refetchSnapshot]);
+
+  // Socket-disconnect reconciliation.
+  //
+  // `activeThreadId` and the per-thread inference lifecycle are only ever
+  // cleared by `chat_done` / `chat_error` events. If the socket drops
+  // mid-turn (Windows sleep/wake, network change, VPN flap) those events
+  // fire on the dead session and never reach us, so the composer stays
+  // disabled until the 2-minute silence timer expires — users perceive
+  // this as being "locked out" of typing.
+  //
+  // When the socket leaves the `connected` state, treat any in-flight
+  // turn on the previous session as unrecoverable: clear the live
+  // inference status, end the lifecycle row, and release `activeThreadId`
+  // so the composer is immediately typeable again. Streaming assistant
+  // text is preserved so the partial reply stays visible.
+  useEffect(() => {
+    if (socketStatus === 'connected') return;
+    const state = store.getState();
+    const lifecycles = state.chatRuntime.inferenceTurnLifecycleByThread;
+    const threadIds = Object.keys(lifecycles);
+    const activeThreadId = state.thread.activeThreadId;
+    if (threadIds.length === 0 && !activeThreadId) return;
+    rtLog('socket_disconnect_reconcile', {
+      socket: socketStatus,
+      inFlight: threadIds.length,
+      active: activeThreadId,
+    });
+    for (const threadId of threadIds) {
+      dispatch(clearInferenceStatusForThread({ threadId }));
+      dispatch(endInferenceTurn({ threadId }));
+    }
+    if (activeThreadId) {
+      dispatch(setActiveThread(null));
+    }
+  }, [socketStatus, dispatch]);
 
   return <>{children}</>;
 };

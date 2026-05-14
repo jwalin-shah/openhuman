@@ -8,12 +8,19 @@
  *   - Assert rendered text and dispatched actions for each meaningful state.
  */
 import { configureStore } from '@reduxjs/toolkit';
+import { isTauri } from '@tauri-apps/api/core';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import coreModeReducer, { type CoreModeState } from '../../../store/coreModeSlice';
 import BootCheckGate from '../BootCheckGate';
+
+// The global test setup mocks isTauri()=>false (web). The existing picker
+// behavior under test was written for desktop (local option visible,
+// pre-selected). Force desktop runtime for those describes; the new web
+// describe at the bottom flips it back to false.
+const mockedIsTauri = vi.mocked(isTauri);
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -24,13 +31,20 @@ vi.mock('../../../lib/bootCheck', () => ({
   runBootCheck: (...args: unknown[]) => mockRunBootCheck(...args),
 }));
 
+const mockTestCoreRpcConnection = vi.fn();
 vi.mock('../../../services/coreRpcClient', () => ({
   callCoreRpc: vi.fn(),
   clearCoreRpcUrlCache: vi.fn(),
+  clearCoreRpcTokenCache: vi.fn(),
+  testCoreRpcConnection: (...args: unknown[]) => mockTestCoreRpcConnection(...args),
 }));
 
 vi.mock('../../../utils/configPersistence', () => ({
   storeRpcUrl: vi.fn(),
+  storeCoreToken: vi.fn(),
+  clearStoredCoreToken: vi.fn(),
+  storeCoreMode: vi.fn(),
+  clearStoredCoreMode: vi.fn(),
   isValidRpcUrl: vi.fn().mockReturnValue(true),
 }));
 
@@ -60,6 +74,11 @@ function renderGate(store = makeStore()) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// All describes below assume desktop unless they explicitly opt out.
+beforeEach(() => {
+  mockedIsTauri.mockReturnValue(true);
+});
 
 describe('BootCheckGate — picker (unset mode)', () => {
   it('shows the mode picker when coreMode is unset', () => {
@@ -113,6 +132,209 @@ describe('BootCheckGate — picker (unset mode)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.getByText(/must start with http/)).toBeInTheDocument();
+  });
+
+  it('shows URL validation error for malformed URL string', () => {
+    renderGate();
+
+    fireEvent.click(screen.getByText('Cloud'));
+    const input = screen.getByPlaceholderText(/https:\/\/core\.example\.com/);
+    fireEvent.change(input, { target: { value: 'not a url at all' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText(/Please enter a valid URL/)).toBeInTheDocument();
+  });
+
+  it('shows token validation error when cloud URL is valid but token is missing', () => {
+    renderGate();
+
+    fireEvent.click(screen.getByText('Cloud'));
+    const urlInput = screen.getByPlaceholderText(/https:\/\/core\.example\.com/);
+    fireEvent.change(urlInput, { target: { value: 'https://core.example.com/rpc' } });
+    // Token left blank.
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText(/Please enter the core auth token/i)).toBeInTheDocument();
+  });
+
+  it('clears the token error as soon as the user types into the token field', () => {
+    renderGate();
+
+    fireEvent.click(screen.getByText('Cloud'));
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/core\.example\.com/), {
+      target: { value: 'https://core.example.com/rpc' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByText(/Please enter the core auth token/i)).toBeInTheDocument();
+
+    const tokenInput = screen.getByPlaceholderText(/Bearer token/i);
+    fireEvent.change(tokenInput, { target: { value: 'tok' } });
+
+    expect(screen.queryByText(/Please enter the core auth token/i)).not.toBeInTheDocument();
+  });
+
+  it('advances past picker and triggers boot check when cloud URL + token are both set', async () => {
+    mockRunBootCheck.mockResolvedValue({ kind: 'match' });
+
+    renderGate();
+    fireEvent.click(screen.getByText('Cloud'));
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/core\.example\.com/), {
+      target: { value: 'https://core.example.com/rpc' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Bearer token/i), {
+      target: { value: 'tok-1234' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-content')).toBeInTheDocument();
+    });
+    expect(mockRunBootCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'cloud',
+        url: 'https://core.example.com/rpc',
+        token: 'tok-1234',
+      }),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('BootCheckGate — picker test connection', () => {
+  beforeEach(() => {
+    mockTestCoreRpcConnection.mockReset();
+  });
+
+  function fillCloudInputs(url = 'https://core.example.com/rpc', token = 'tok-abc') {
+    fireEvent.click(screen.getByText('Cloud'));
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/core\.example\.com/), {
+      target: { value: url },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Bearer token/i), { target: { value: token } });
+  }
+
+  it('shows Connected on a 200 response', async () => {
+    mockTestCoreRpcConnection.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ result: { ok: true } }),
+    } as unknown as Response);
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-ok')).toBeInTheDocument();
+    });
+    expect(mockTestCoreRpcConnection).toHaveBeenCalledWith(
+      'https://core.example.com/rpc',
+      'tok-abc'
+    );
+  });
+
+  it('shows Auth failed on a 401 response', async () => {
+    mockTestCoreRpcConnection.mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'unauthorized' }),
+    } as unknown as Response);
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-auth')).toBeInTheDocument();
+    });
+  });
+
+  it('shows Auth failed on a 403 response', async () => {
+    mockTestCoreRpcConnection.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({}),
+    } as unknown as Response);
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-auth')).toBeInTheDocument();
+    });
+  });
+
+  it('shows Unreachable when fetch rejects', async () => {
+    mockTestCoreRpcConnection.mockRejectedValue(new Error('network down'));
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-unreachable')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('test-status-unreachable').textContent).toMatch(/network down/);
+  });
+
+  it('shows Unreachable on non-2xx non-auth response', async () => {
+    mockTestCoreRpcConnection.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    } as unknown as Response);
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-unreachable')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('test-status-unreachable').textContent).toMatch(/HTTP 500/);
+  });
+
+  it('does not call the test endpoint when URL is missing', () => {
+    renderGate();
+    fireEvent.click(screen.getByText('Cloud'));
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    expect(mockTestCoreRpcConnection).not.toHaveBeenCalled();
+    expect(screen.getByText('Please enter a core URL.')).toBeInTheDocument();
+  });
+
+  it('does not call the test endpoint when token is missing', () => {
+    renderGate();
+    fireEvent.click(screen.getByText('Cloud'));
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/core\.example\.com/), {
+      target: { value: 'https://core.example.com/rpc' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    expect(mockTestCoreRpcConnection).not.toHaveBeenCalled();
+    expect(screen.getByText(/Please enter the core auth token/i)).toBeInTheDocument();
+  });
+
+  it('clears a stale ok status when the user edits inputs again', async () => {
+    mockTestCoreRpcConnection.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    } as unknown as Response);
+
+    renderGate();
+    fillCloudInputs();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('test-status-ok')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/Bearer token/i), {
+      target: { value: 'tok-def' },
+    });
+
+    expect(screen.queryByTestId('test-status-ok')).not.toBeInTheDocument();
   });
 });
 
@@ -260,5 +482,69 @@ describe('BootCheckGate — pre-set mode (subsequent launches)', () => {
     });
 
     expect(screen.queryByText('Choose core mode')).not.toBeInTheDocument();
+  });
+});
+
+describe('BootCheckGate — picker (web build, !isTauri)', () => {
+  beforeEach(() => {
+    mockedIsTauri.mockReturnValue(false);
+  });
+
+  it('uses the web-friendly title and hides the Local option', () => {
+    renderGate();
+
+    expect(screen.getByText('Connect to your core')).toBeInTheDocument();
+    expect(screen.queryByText('Choose core mode')).not.toBeInTheDocument();
+    expect(screen.queryByText('Local (recommended)')).not.toBeInTheDocument();
+    // The selectable Cloud tile is also gone — cloud is implicit and the
+    // URL/token form is rendered directly.
+    expect(screen.queryByRole('button', { name: 'Cloud' })).not.toBeInTheDocument();
+  });
+
+  it('renders the cloud form fields immediately (cloud is the only option)', () => {
+    renderGate();
+
+    expect(screen.getByPlaceholderText(/https:\/\/core\.example\.com/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Bearer token/i)).toBeInTheDocument();
+  });
+
+  it('shows a Download desktop app CTA linking to the release page', () => {
+    renderGate();
+
+    const cta = screen.getByTestId('web-download-cta');
+    expect(cta).toBeInTheDocument();
+    const link = cta.querySelector('a');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toMatch(
+      /github\.com\/tinyhumansai\/openhuman\/releases\/latest/
+    );
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toMatch(/noopener/);
+  });
+
+  it('continues into a cloud boot check when URL + token are provided', async () => {
+    mockRunBootCheck.mockResolvedValue({ kind: 'match' });
+
+    renderGate();
+
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/core\.example\.com/), {
+      target: { value: 'https://core.example.com/rpc' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Bearer token/i), {
+      target: { value: 'tok-web' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-content')).toBeInTheDocument();
+    });
+    expect(mockRunBootCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'cloud',
+        url: 'https://core.example.com/rpc',
+        token: 'tok-web',
+      }),
+      expect.any(Object)
+    );
   });
 });

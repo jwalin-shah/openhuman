@@ -10,13 +10,13 @@ import {
   REGISTER,
   REHYDRATE,
 } from 'redux-persist';
-import defaultStorage from 'redux-persist/lib/storage';
 
 import { IS_DEV } from '../utils/config';
 import accountsReducer from './accountsSlice';
 import channelConnectionsReducer from './channelConnectionsSlice';
 import chatRuntimeReducer from './chatRuntimeSlice';
 import coreModeReducer from './coreModeSlice';
+import mascotReducer from './mascotSlice';
 import notificationReducer from './notificationSlice';
 import providerSurfacesReducer from './providerSurfaceSlice';
 import socketReducer from './socketSlice';
@@ -30,7 +30,46 @@ const storage = userScopedStorage;
 
 // coreMode is pre-login and not user-scoped — use plain localStorage so the
 // setting survives across user switches without leaking per-user state.
-const coreModePersistConfig = { key: 'coreMode', storage: defaultStorage, whitelist: ['mode'] };
+// Inline adapter rather than `redux-persist/lib/storage`'s default export,
+// which Vite's CJS dep-pre-bundling can resolve to the module namespace
+// (then `storage.getItem` is undefined and rehydrate throws on cold boot).
+const localStorageAdapter = {
+  getItem: (key: string) =>
+    Promise.resolve(
+      (() => {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      })()
+    ),
+  setItem: (key: string, value: string) =>
+    Promise.resolve(
+      (() => {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          /* ignore quota / unavailable */
+        }
+      })()
+    ),
+  removeItem: (key: string) =>
+    Promise.resolve(
+      (() => {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          /* ignore */
+        }
+      })()
+    ),
+};
+const coreModePersistConfig = {
+  key: 'coreMode',
+  storage: localStorageAdapter,
+  whitelist: ['mode'],
+};
 const persistedCoreModeReducer = persistReducer(coreModePersistConfig, coreModeReducer);
 
 const channelConnectionsPersistConfig = {
@@ -66,6 +105,11 @@ const persistedNotificationReducer = persistReducer(notificationPersistConfig, n
 const threadPersistConfig = { key: 'thread', storage, whitelist: ['selectedThreadId'] };
 const persistedThreadReducer = persistReducer(threadPersistConfig, threadReducer);
 
+// Mascot appearance — color preference is per-user so it travels with the
+// account on logout/login rather than leaking across users.
+const mascotPersistConfig = { key: 'mascot', storage, whitelist: ['color'] };
+const persistedMascotReducer = persistReducer(mascotPersistConfig, mascotReducer);
+
 export const store = configureStore({
   reducer: {
     socket: socketReducer,
@@ -76,6 +120,7 @@ export const store = configureStore({
     notifications: persistedNotificationReducer,
     providerSurfaces: providerSurfacesReducer,
     coreMode: persistedCoreModeReducer,
+    mascot: persistedMascotReducer,
   },
   middleware: getDefaultMiddleware => {
     const middleware = getDefaultMiddleware({

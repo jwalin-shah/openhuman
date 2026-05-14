@@ -18,6 +18,7 @@ import OpenhumanLinkModal from './components/OpenhumanLinkModal';
 import PersistRehydrationScreen from './components/PersistRehydrationScreen';
 import GlobalUpsellBanner from './components/upsell/GlobalUpsellBanner';
 import AppWalkthrough from './components/walkthrough/AppWalkthrough';
+import { MascotFrameProducer } from './features/meet/MascotFrameProducer';
 // [#1123] Commented out — welcome-agent onboarding replaced by Joyride walkthrough
 // import { isWelcomeLocked } from './lib/coreState/store';
 import { startNativeNotificationsService } from './lib/nativeNotifications';
@@ -25,6 +26,7 @@ import { startWebviewNotificationsService } from './lib/webviewNotifications';
 import ChatRuntimeProvider from './providers/ChatRuntimeProvider';
 import CoreStateProvider, { useCoreState } from './providers/CoreStateProvider';
 import SocketProvider from './providers/SocketProvider';
+import { trackPageView } from './services/analytics';
 import { startWebviewAccountService } from './services/webviewAccountService';
 import { persistor, store } from './store';
 // [#1123] useAppDispatch commented out — welcome-agent onboarding replaced by Joyride walkthrough
@@ -115,6 +117,11 @@ function AppShell() {
     navigate,
   ]);
 
+  // Track route changes as anonymous page views.
+  useEffect(() => {
+    trackPageView(location.pathname);
+  }, [location.pathname]);
+
   // [#1123] Commented out — welcome-agent onboarding replaced by Joyride walkthrough
   // After the welcome agent calls `complete_onboarding` and
   // `chat_onboarding_completed` flips false→true, discard the transient
@@ -178,6 +185,11 @@ function AppShell() {
         {!onOnboardingRoute && <BottomTabBar />}
       </div>
       <OpenhumanLinkModal />
+      {/* Hidden Remotion-driven producer for the Meet camera. Mounts a
+          640×480 JPEG frame stream to the Rust frame bus while a meet
+          call is active; idle no-op otherwise. See
+          features/meet/MascotFrameProducer.tsx. */}
+      <MascotFrameProducer />
       {/* Post-onboarding Joyride walkthrough — mounted here (outside routes) so
           it persists across tab navigations. Joyride targets span Home + BottomTabBar
           tabs so it must stay mounted while the user moves between routes. */}

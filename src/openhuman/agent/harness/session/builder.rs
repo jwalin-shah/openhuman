@@ -380,6 +380,15 @@ impl AgentBuilder {
                 .agent_definition_name
                 .clone()
                 .unwrap_or_else(|| "main".to_string()),
+            // Canonical registry id — captured here at build time
+            // before any caller can call `set_agent_definition_name`
+            // and clobber the transcript-facing name. Used by
+            // `refresh_delegation_tools` to re-resolve the agent's
+            // `subagents` declaration against the global registry.
+            agent_definition_id: self
+                .agent_definition_name
+                .clone()
+                .unwrap_or_else(|| "main".to_string()),
             session_transcript_path: None,
             session_key: {
                 let unix_ts = std::time::SystemTime::now()
@@ -411,6 +420,8 @@ impl AgentBuilder {
             omit_profile: self.omit_profile.unwrap_or(true),
             omit_memory_md: self.omit_memory_md.unwrap_or(true),
             payload_summarizer: self.payload_summarizer,
+            last_seen_integrations_hash: 0,
+            synthesized_tool_names: std::collections::HashSet::new(),
         })
     }
 }
@@ -534,17 +545,56 @@ impl Agent {
                 .unwrap_or(config.default_temperature)
         );
 
-        Self::build_session_agent_inner(config, agent_id, target_def.as_ref())
+        Self::build_session_agent_inner(config, agent_id, target_def.as_ref(), None)
+    }
+
+    /// Same as [`Self::from_config_for_agent`] but also appends a
+    /// `ReflectionMemoryContextSection` to the assembled
+    /// [`SystemPromptBuilder`], seeded with the `source_chunks` snapshot
+    /// from the spawning subconscious reflection (#623).
+    ///
+    /// Used by `channels::providers::web::build_session_agent` when a
+    /// chat thread's seed message metadata flags
+    /// `origin == "subconscious_reflection"` — the orchestrator then
+    /// has the same memory context the reflection-LLM had, so the user's
+    /// follow-up questions stay grounded in the underlying chunks.
+    pub fn from_config_for_agent_with_reflection_chunks(
+        config: &Config,
+        agent_id: &str,
+        reflection_chunks: Vec<crate::openhuman::subconscious::SourceChunk>,
+    ) -> Result<Self> {
+        // Reuse the same registry-resolution path the canonical
+        // `from_config_for_agent` walks, then route through the inner
+        // constructor with the chunks attached.
+        let target_def: Option<crate::openhuman::agent::harness::definition::AgentDefinition> =
+            match AgentDefinitionRegistry::global() {
+                Some(reg) => reg.get(agent_id).cloned(),
+                None => None,
+            };
+        Self::build_session_agent_inner(
+            config,
+            agent_id,
+            target_def.as_ref(),
+            Some(reflection_chunks),
+        )
     }
 
     /// Internal constructor that consumes the optionally-resolved agent
     /// definition. Split out from [`Agent::from_config_for_agent`] so
     /// the lookup + logging live in one place and the heavy-lifting
     /// body stays readable.
+    ///
+    /// `reflection_chunks`, when present, are appended to the assembled
+    /// `SystemPromptBuilder` as a [`ReflectionMemoryContextSection`] so
+    /// the orchestrator's system prompt carries the same memory context
+    /// the subconscious LLM cited when it produced the spawning
+    /// reflection (#623). Empty / `None` is the default for normal chat
+    /// threads — the section is omitted entirely.
     fn build_session_agent_inner(
         config: &Config,
         agent_id: &str,
         target_def: Option<&crate::openhuman::agent::harness::definition::AgentDefinition>,
+        reflection_chunks: Option<Vec<crate::openhuman::subconscious::SourceChunk>>,
     ) -> Result<Self> {
         let runtime: Arc<dyn host_runtime::RuntimeAdapter> =
             Arc::from(host_runtime::create_runtime(&config.runtime)?);
@@ -553,8 +603,9 @@ impl Agent {
             &config.workspace_dir,
         ));
 
-        let memory: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage_and_routes(
+        let memory: Arc<dyn Memory> = Arc::from(memory::create_memory_with_local_ai(
             &config.memory,
+            &config.local_ai,
             &config.embedding_routes,
             Some(&config.storage.provider.config),
             &config.workspace_dir,
@@ -619,6 +670,7 @@ impl Agent {
         };
 
         let provider: Box<dyn Provider> = providers::create_intelligent_routing_provider(
+            config.inference_url.as_deref(),
             config.api_url.as_deref(),
             config.api_key.as_deref(),
             config,
@@ -723,9 +775,29 @@ impl Agent {
                 .add_section(Box::new(
                     crate::openhuman::learning::UserProfileSection::new(memory.clone()),
                 ));
+            // NOTE: MemoryAccessSection is added after tool-filtering so we can
+            // gate it on retrieval-tool visibility — see below.
             log::info!(
                 "[learning] prompt sections registered (user_reflections, learned_context, user_profile)"
             );
+        }
+
+        // (#623) Memory context for threads spawned from a subconscious
+        // reflection: append the resolved `source_chunks` snapshot from
+        // the reflection row as a `ReflectionMemoryContextSection`. The
+        // resulting system prompt stays byte-stable for the session, so
+        // every chat turn in the thread sees the same memory chunks the
+        // subconscious LLM cited — without re-fetching per turn and
+        // without polluting the visible conversation. No-op when the
+        // caller passes `None` (regular chat threads).
+        if let Some(chunks) = reflection_chunks {
+            if !chunks.is_empty() {
+                log::info!(
+                    "[#623] injecting reflection memory context: {} chunks",
+                    chunks.len()
+                );
+                prompt_builder = prompt_builder.with_reflection_context(chunks);
+            }
         }
 
         // Build post-turn hooks when learning is enabled
@@ -745,6 +817,7 @@ impl Agent {
                         == crate::openhuman::config::ReflectionSource::Cloud
                     {
                         Some(Arc::from(providers::create_routed_provider(
+                            config.inference_url.as_deref(),
                             config.api_url.as_deref(),
                             config.api_key.as_deref(),
                             &config.reliability,
@@ -781,6 +854,13 @@ impl Agent {
                 )));
                 log::info!("[learning] tool_tracker hook registered");
             }
+
+            if config.learning.tool_memory_capture_enabled {
+                post_turn_hooks.push(Arc::new(
+                    crate::openhuman::memory::ToolMemoryCaptureHook::new(memory.clone(), true),
+                ));
+                log::info!("[learning] tool_memory_capture hook registered");
+            }
         }
 
         // Resolve the per-agent delegation tool set and visible-tool
@@ -789,8 +869,10 @@ impl Agent {
         //
         // For an agent with `subagents = [...]` in its TOML (today:
         // orchestrator), `collect_orchestrator_tools` synthesises one
-        // `ArchetypeDelegationTool` per named sub-agent plus one
-        // `SkillDelegationTool` per connected Composio toolkit.
+        // `ArchetypeDelegationTool` per named sub-agent plus a single
+        // collapsed `SkillDelegationTool`
+        // (`delegate_to_integrations_agent`) whose `toolkit` argument
+        // selects among the connected Composio toolkits (#1335).
         //
         // For an agent without `subagents` (today: welcome, critic,
         // archivist, etc.), no delegation tools are synthesised — the
@@ -871,6 +953,35 @@ impl Agent {
                 .map(|t| t.name().to_string())
                 .collect(),
         };
+
+        // Phase 4 (#566): add the MemoryAccessSection bias instruction only
+        // when at least one retrieval tool is actually loaded AND survives
+        // filtering. We require both because:
+        //   - the tool may be filtered out by the agent's scope config
+        //   - the tool may not be registered at all on this agent (tool
+        //     listing is build-time configurable)
+        // An empty `visible` set means "no filter" (wildcard / orchestrator
+        // path); in that case any registered retrieval tool is reachable.
+        if config.learning.enabled {
+            let recall_tools = ["memory_recall", "memory_search"];
+            let has_retrieval = recall_tools.iter().any(|name| {
+                let registered = tools.iter().any(|t| t.name() == *name)
+                    || delegation_tools.iter().any(|t| t.name() == *name);
+                let allowed_by_filter = visible.is_empty() || visible.contains(*name);
+                registered && allowed_by_filter
+            });
+            if has_retrieval {
+                prompt_builder = prompt_builder
+                    .add_section(Box::new(crate::openhuman::learning::MemoryAccessSection));
+                log::debug!("[learning] memory_access prompt section registered");
+            } else {
+                log::debug!(
+                    "[learning] skipping MemoryAccessSection — neither memory_recall nor \
+                     memory_search is registered+visible for agent={agent_id}"
+                );
+            }
+        }
+
         // De-duplicate: some synthesised tool names may collide with
         // already-registered tools (unlikely for `delegate_*` names but
         // cheap to guard against).
@@ -881,6 +992,27 @@ impl Agent {
                 .into_iter()
                 .filter(|t| !existing_names.contains(t.name())),
         );
+
+        // Pre-fetch Critical + High priority tool-scoped memory rules so they
+        // pin into the (compression-resistant) system prompt for the whole
+        // session. Done here — after the tool list is finalised — so we only
+        // fetch rules for tools this agent can actually use.  Skipped when
+        // `learning.enabled` is false (no new rules are written in that mode,
+        // and users who opt out of learning expect no stored rules to surface)
+        // or when the runtime cannot host a synchronous bridge (single-threaded
+        // test harnesses).
+        if config.learning.enabled && config.learning.tool_memory_capture_enabled {
+            let agent_tool_names: Vec<String> =
+                tools.iter().map(|t| t.name().to_string()).collect();
+            let pinned = prefetch_tool_memory_rules_blocking(memory.clone(), &agent_tool_names);
+            if !pinned.is_empty() {
+                log::info!(
+                    "[memory::tool_memory] pinning {} tool-scoped rule(s) into system prompt",
+                    pinned.len()
+                );
+                prompt_builder = prompt_builder.with_tool_memory_rules(pinned);
+            }
+        }
 
         // Build the P-Format registry AFTER the tool list is finalised
         // (including orchestrator tools) so every tool gets a signature
@@ -1063,4 +1195,54 @@ impl Agent {
         }
         builder.build()
     }
+}
+
+/// (#1400) Best-effort synchronous prefetch of eager tool-scoped rules.
+///
+/// `from_config_*` is sync but typically runs inside a multi-threaded
+/// Tokio runtime (the agent harness path from the channels runtime).
+/// We use `block_in_place` + the current runtime handle to call the
+/// async store API without restructuring the whole session builder.
+///
+/// Returns an empty `Vec` (rather than erroring) when:
+///   - no Tokio runtime is active (e.g. a sync CLI bootstrap),
+///   - the runtime is single-threaded (`block_in_place` would panic),
+///   - or the underlying `rules_for_prompt` call returns an error
+///     (e.g. the memory backend isn't ready yet).
+///
+/// Critical / High rules captured later in the session are still
+/// available via the `memory_tool_rules_for_prompt` RPC; this prefetch
+/// merely seeds the rules that exist at session start.
+fn prefetch_tool_memory_rules_blocking(
+    memory: Arc<dyn Memory>,
+    tool_names: &[String],
+) -> Vec<crate::openhuman::memory::ToolMemoryRule> {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return Vec::new();
+    };
+    if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+        return Vec::new();
+    }
+    let tool_names = tool_names.to_vec();
+    tokio::task::block_in_place(|| {
+        handle.block_on(async move {
+            let store = crate::openhuman::memory::ToolMemoryStore::new(memory);
+            match store.rules_for_prompt(&tool_names).await {
+                Ok(grouped) => {
+                    let mut flat: Vec<_> = grouped.into_values().flatten().collect();
+                    flat.sort_by(|a, b| {
+                        b.priority
+                            .cmp(&a.priority)
+                            .then_with(|| a.tool_name.cmp(&b.tool_name))
+                            .then_with(|| a.rule.cmp(&b.rule))
+                    });
+                    flat
+                }
+                Err(err) => {
+                    log::warn!("[memory::tool_memory] prefetch failed: {err}");
+                    Vec::new()
+                }
+            }
+        })
+    })
 }

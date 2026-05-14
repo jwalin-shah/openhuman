@@ -32,8 +32,10 @@ export type SettingsRoute =
   | 'local-model-debug'
   | 'notifications'
   | 'notification-routing'
+  | 'mascot'
   | 'intelligence'
-  | 'webhooks-triggers';
+  | 'webhooks-triggers'
+  | 'composio-triggers';
 
 export interface BreadcrumbItem {
   label: string;
@@ -99,6 +101,7 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
     if (path.includes('/settings/memory-debug')) return 'memory-debug';
     if (path.includes('/settings/webhooks-debug')) return 'webhooks-debug';
     if (path.includes('/settings/webhooks-triggers')) return 'webhooks-triggers';
+    if (path.includes('/settings/composio-triggers')) return 'composio-triggers';
     if (path.includes('/settings/intelligence')) return 'intelligence';
     if (path.includes('/settings/recovery-phrase')) return 'recovery-phrase';
     if (path.includes('/settings/agent-chat')) return 'agent-chat';
@@ -107,6 +110,7 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
     // shorter `notifications` prefix.
     if (path.includes('/settings/notification-routing')) return 'notification-routing';
     if (path.includes('/settings/notifications')) return 'notifications';
+    if (path.includes('/settings/mascot')) return 'mascot';
     return 'home';
   };
 
@@ -214,6 +218,7 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
       case 'memory-debug':
       case 'intelligence':
       case 'webhooks-triggers':
+      case 'composio-triggers':
       case 'notification-routing':
         return [settingsCrumb, developerCrumb];
 
@@ -223,6 +228,10 @@ export const useSettingsNavigation = (): SettingsNavigationHook => {
 
       // Notifications panel sits at the top level of Settings.
       case 'notifications':
+        return [settingsCrumb];
+
+      // Mascot appearance panel sits at the top level of Settings.
+      case 'mascot':
         return [settingsCrumb];
 
       case 'home':
